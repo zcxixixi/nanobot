@@ -73,6 +73,49 @@ def onboard():
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
 
 
+@app.command("login")
+def login(
+    provider: str = typer.Option("openai-codex", "--provider", "-p", help="Auth provider"),
+):
+    """Login to an auth provider (e.g. openai-codex)."""
+    if provider != "openai-codex":
+        console.print(f"[red]Unsupported provider: {provider}[/red]")
+        raise typer.Exit(1)
+
+    from nanobot.auth.codex_oauth import login_codex_oauth_interactive
+
+    def on_auth(url: str) -> None:
+        console.print("[cyan]A browser window will open for login. If it doesn't, open this URL manually:[/cyan]")
+        console.print(url)
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    def on_status(message: str) -> None:
+        console.print(f"[yellow]{message}[/yellow]")
+
+    def on_progress(message: str) -> None:
+        console.print(f"[dim]{message}[/dim]")
+
+    def on_prompt(message: str) -> str:
+        return typer.prompt(message)
+
+    def on_manual_code_input(message: str) -> None:
+        console.print(f"[cyan]{message}[/cyan]")
+
+    console.print("[green]Starting OpenAI Codex OAuth login...[/green]")
+    login_codex_oauth_interactive(
+        on_auth=on_auth,
+        on_prompt=on_prompt,
+        on_status=on_status,
+        on_progress=on_progress,
+        on_manual_code_input=on_manual_code_input,
+    )
+    console.print("[green]✓ Login successful. Credentials saved.[/green]")
+
+
 
 
 def _create_workspace_templates(workspace: Path):
@@ -148,10 +191,22 @@ This file stores important information that should persist across sessions.
 
 
 def _make_provider(config):
-    """Create LiteLLMProvider from config. Exits if no API key found."""
+    """Create provider from config. Supports OpenAI Codex OAuth and API-key providers."""
     from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.providers.openai_codex_provider import OpenAICodexProvider
+    from nanobot.auth.codex_oauth import ensure_codex_token_available
+
     p = config.get_provider()
     model = config.agents.defaults.model
+    if model.startswith("openai-codex/"):
+        try:
+            ensure_codex_token_available()
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            console.print("Please run: [cyan]nanobot login --provider openai-codex[/cyan]")
+            raise typer.Exit(1)
+        return OpenAICodexProvider(default_model=model)
+
     if not (p and p.api_key) and not model.startswith("bedrock/"):
         console.print("[red]Error: No API key configured.[/red]")
         console.print("Set one in ~/.nanobot/config.json under providers section")
@@ -192,7 +247,7 @@ def gateway(
     config = load_config()
     bus = MessageBus()
     provider = _make_provider(config)
-    
+
     # Create cron service first (callback set after agent creation)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
@@ -291,7 +346,7 @@ def agent(
     from nanobot.agent.loop import AgentLoop
     
     config = load_config()
-    
+
     bus = MessageBus()
     provider = _make_provider(config)
     
