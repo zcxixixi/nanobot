@@ -1,4 +1,4 @@
-"""CLI commands for nanobot."""
+﻿"""CLI commands for nanobot."""
 
 import asyncio
 import atexit
@@ -791,6 +791,7 @@ def cron_run(
 def status():
     """Show nanobot status."""
     from nanobot.config.loader import load_config, get_config_path
+    from nanobot.auth.codex import get_codex_token
 
     config_path = get_config_path()
     config = load_config()
@@ -821,6 +822,12 @@ def status():
                 has_key = bool(p.api_key)
                 console.print(f"{spec.label}: {'[green]✓[/green]' if has_key else '[dim]not set[/dim]'}")
 
+        try:
+            _ = get_codex_token()
+            codex_status = "[green]logged in[/green]"
+        except Exception:
+            codex_status = "[dim]not logged in[/dim]"
+        console.print(f"Codex Login: {codex_status}")
 
 if __name__ == "__main__":
     app()
