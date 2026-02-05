@@ -84,37 +84,12 @@ def login(
 
     from nanobot.auth.codex import login_codex_oauth_interactive
 
-    def on_auth(url: str) -> None:
-        console.print("[cyan]A browser window will open for login. If it doesn't, open this URL manually:[/cyan]")
-        console.print(url)
-        try:
-            import webbrowser
-            webbrowser.open(url)
-        except Exception:
-            pass
-
-    def on_status(message: str) -> None:
-        console.print(f"[yellow]{message}[/yellow]")
-
-    def on_progress(message: str) -> None:
-        console.print(f"[dim]{message}[/dim]")
-
-    def on_prompt(message: str) -> str:
-        return typer.prompt(message)
-
-    def on_manual_code_input(message: str) -> None:
-        console.print(f"[cyan]{message}[/cyan]")
-
     console.print("[green]Starting OpenAI Codex OAuth login...[/green]")
     login_codex_oauth_interactive(
-        on_auth=on_auth,
-        on_prompt=on_prompt,
-        on_status=on_status,
-        on_progress=on_progress,
-        on_manual_code_input=on_manual_code_input,
+        print_fn=console.print,
+        prompt_fn=typer.prompt,
     )
-    console.print("[green]✓ Login successful. Credentials saved.[/green]")
-
+    console.print("[green]Login successful. Credentials saved.[/green]")
 
 
 
