@@ -22,6 +22,8 @@ _READLINE: Any | None = None
 _HISTORY_FILE: Path | None = None
 _HISTORY_HOOK_REGISTERED = False
 _USING_LIBEDIT = False
+_PROMPT_SESSION: Any | None = None
+_PROMPT_SESSION_LABEL: Any = None
 
 
 def _save_history() -> None:
@@ -48,8 +50,50 @@ def _remember_input_history(text: str) -> None:
 
 
 def _enable_line_editing() -> None:
-    """Best-effort enable readline support for interactive input."""
+    """Best-effort enable prompt_toolkit/readline support for interactive input."""
     global _READLINE, _HISTORY_FILE, _HISTORY_HOOK_REGISTERED, _USING_LIBEDIT
+    global _PROMPT_SESSION, _PROMPT_SESSION_LABEL
+
+    history_file = Path.home() / ".nanobot" / "history" / "cli_history"
+    history_file.parent.mkdir(parents=True, exist_ok=True)
+    _HISTORY_FILE = history_file
+
+    # Prefer prompt_toolkit for robust wide-character rendering and line editing.
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.formatted_text import ANSI
+        from prompt_toolkit.history import FileHistory
+        from prompt_toolkit.key_binding import KeyBindings
+
+        key_bindings = KeyBindings()
+
+        @key_bindings.add("enter")
+        def _accept_input(event) -> None:
+            event.current_buffer.validate_and_handle()
+
+        @key_bindings.add("up")
+        def _handle_up(event) -> None:
+            event.current_buffer.auto_up(count=event.arg)
+
+        @key_bindings.add("down")
+        def _handle_down(event) -> None:
+            event.current_buffer.auto_down(count=event.arg)
+
+        _PROMPT_SESSION = PromptSession(
+            history=FileHistory(str(history_file)),
+            multiline=True,
+            wrap_lines=True,
+            key_bindings=key_bindings,
+            complete_while_typing=False,
+        )
+        _PROMPT_SESSION_LABEL = ANSI("\x1b[1;34mYou:\x1b[0m ")
+        _READLINE = None
+        _USING_LIBEDIT = False
+        return
+    except Exception:
+        _PROMPT_SESSION = None
+        _PROMPT_SESSION_LABEL = None
+
     try:
         import readline
     except Exception:
@@ -66,10 +110,6 @@ def _enable_line_editing() -> None:
         readline.parse_and_bind("set editing-mode emacs")
     except Exception:
         pass
-
-    history_file = Path.home() / ".nanobot" / "history" / "cli_history"
-    history_file.parent.mkdir(parents=True, exist_ok=True)
-    _HISTORY_FILE = history_file
 
     try:
         readline.read_history_file(str(history_file))
@@ -95,6 +135,13 @@ def _read_interactive_input() -> str:
     Keep a colored prompt while preserving correct cursor math in readline
     by marking non-printing ANSI escape sequences.
     """
+    if _PROMPT_SESSION is not None:
+        try:
+            return _PROMPT_SESSION.prompt(_PROMPT_SESSION_LABEL)
+        except EOFError as exc:
+            # Keep interactive loop shutdown behavior consistent.
+            raise KeyboardInterrupt from exc
+
     if _READLINE is None:
         return input("You: ")
 
@@ -105,6 +152,16 @@ def _read_interactive_input() -> str:
 
     # GNU readline: mark non-printing ANSI bytes for correct cursor math.
     return input("\001\033[1;34m\002You:\001\033[0m\002 ")
+
+
+async def _read_interactive_input_async() -> str:
+    """Async-safe variant for interactive loop."""
+    if _PROMPT_SESSION is not None:
+        try:
+            return await _PROMPT_SESSION.prompt_async(_PROMPT_SESSION_LABEL)
+        except EOFError as exc:
+            raise KeyboardInterrupt from exc
+    return _read_interactive_input()
 
 
 def version_callback(value: bool):
@@ -461,7 +518,7 @@ def agent(
         async def run_interactive():
             while True:
                 try:
-                    user_input = _read_interactive_input()
+                    user_input = await _read_interactive_input_async()
                     if not user_input.strip():
                         continue
                     _remember_input_history(user_input)

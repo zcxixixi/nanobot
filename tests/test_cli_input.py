@@ -1,6 +1,72 @@
 import builtins
 
+import pytest
+
 import nanobot.cli.commands as commands
+
+
+def test_read_interactive_input_prefers_prompt_session(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakePromptSession:
+        def prompt(self, label: object) -> str:
+            captured["label"] = label
+            return "hello"
+
+    monkeypatch.setattr(commands, "_PROMPT_SESSION", FakePromptSession())
+    monkeypatch.setattr(commands, "_PROMPT_SESSION_LABEL", "LABEL")
+
+    value = commands._read_interactive_input()
+
+    assert value == "hello"
+    assert captured["label"] == "LABEL"
+
+
+def test_read_interactive_input_converts_prompt_session_eof(monkeypatch) -> None:
+    class FakePromptSession:
+        def prompt(self, _label: object) -> str:
+            raise EOFError
+
+    monkeypatch.setattr(commands, "_PROMPT_SESSION", FakePromptSession())
+    monkeypatch.setattr(commands, "_PROMPT_SESSION_LABEL", "LABEL")
+
+    try:
+        commands._read_interactive_input()
+    except KeyboardInterrupt:
+        assert True
+    else:
+        assert False, "EOF should be converted to KeyboardInterrupt"
+
+
+@pytest.mark.asyncio
+async def test_read_interactive_input_async_prefers_prompt_session(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakePromptSession:
+        async def prompt_async(self, label: object) -> str:
+            captured["label"] = label
+            return "hello"
+
+    monkeypatch.setattr(commands, "_PROMPT_SESSION", FakePromptSession())
+    monkeypatch.setattr(commands, "_PROMPT_SESSION_LABEL", "LABEL")
+
+    value = await commands._read_interactive_input_async()
+
+    assert value == "hello"
+    assert captured["label"] == "LABEL"
+
+
+@pytest.mark.asyncio
+async def test_read_interactive_input_async_converts_prompt_session_eof(monkeypatch) -> None:
+    class FakePromptSession:
+        async def prompt_async(self, _label: object) -> str:
+            raise EOFError
+
+    monkeypatch.setattr(commands, "_PROMPT_SESSION", FakePromptSession())
+    monkeypatch.setattr(commands, "_PROMPT_SESSION_LABEL", "LABEL")
+
+    with pytest.raises(KeyboardInterrupt):
+        await commands._read_interactive_input_async()
 
 
 def test_read_interactive_input_plain_prompt_when_no_readline(monkeypatch) -> None:
@@ -10,6 +76,7 @@ def test_read_interactive_input_plain_prompt_when_no_readline(monkeypatch) -> No
         captured["prompt"] = prompt
         return "hello"
 
+    monkeypatch.setattr(commands, "_PROMPT_SESSION", None)
     monkeypatch.setattr(commands, "_READLINE", None)
     monkeypatch.setattr(builtins, "input", fake_input)
 
@@ -26,6 +93,7 @@ def test_read_interactive_input_colored_prompt_with_readline(monkeypatch) -> Non
         captured["prompt"] = prompt
         return "hello"
 
+    monkeypatch.setattr(commands, "_PROMPT_SESSION", None)
     monkeypatch.setattr(commands, "_READLINE", object())
     monkeypatch.setattr(commands, "_USING_LIBEDIT", False)
     monkeypatch.setattr(builtins, "input", fake_input)
@@ -44,6 +112,7 @@ def test_read_interactive_input_colored_prompt_with_libedit(monkeypatch) -> None
         captured["prompt"] = prompt
         return "hello"
 
+    monkeypatch.setattr(commands, "_PROMPT_SESSION", None)
     monkeypatch.setattr(commands, "_READLINE", object())
     monkeypatch.setattr(commands, "_USING_LIBEDIT", True)
     monkeypatch.setattr(builtins, "input", fake_input)
