@@ -80,6 +80,7 @@ def _enable_line_editing() -> None:
 
         @key_bindings.add("enter")
         def _accept_input(event) -> None:
+            _clear_visual_nav_state(event.current_buffer)
             event.current_buffer.validate_and_handle()
 
         @key_bindings.add("up")
@@ -134,6 +135,9 @@ def _enable_line_editing() -> None:
             wrap_lines=True,
             key_bindings=key_bindings,
             complete_while_typing=False,
+        )
+        _PROMPT_SESSION.default_buffer.on_text_changed += (
+            lambda _event: _clear_visual_nav_state(_PROMPT_SESSION.default_buffer)
         )
         _PROMPT_SESSION_LABEL = ANSI(f"\x1b[1;34m{_PROMPT_TEXT.strip()}\x1b[0m ")
         _READLINE = None
@@ -207,6 +211,9 @@ async def _read_interactive_input_async() -> str:
     """Async-safe variant for interactive loop."""
     if _PROMPT_SESSION is not None:
         try:
+            default_buffer = getattr(_PROMPT_SESSION, "default_buffer", None)
+            if default_buffer is not None:
+                _clear_visual_nav_state(default_buffer)
             return await _PROMPT_SESSION.prompt_async(_PROMPT_SESSION_LABEL)
         except EOFError as exc:
             raise KeyboardInterrupt from exc
@@ -358,6 +365,31 @@ def _choose_visual_rowcol(
     return best_rowcol, target_x
 
 
+def _clear_visual_nav_state(buffer: Any) -> None:
+    """Reset cached vertical-navigation anchor state."""
+    setattr(buffer, "_nanobot_visual_pref_col", None)
+    setattr(buffer, "_nanobot_visual_pref_x", None)
+    setattr(buffer, "_nanobot_visual_last_dir", None)
+    setattr(buffer, "_nanobot_visual_last_cursor", None)
+    setattr(buffer, "_nanobot_visual_last_text", None)
+
+
+def _can_reuse_visual_anchor(buffer: Any, delta: int) -> bool:
+    """Reuse anchor only for uninterrupted vertical navigation."""
+    return (
+        getattr(buffer, "_nanobot_visual_last_dir", None) == delta
+        and getattr(buffer, "_nanobot_visual_last_cursor", None) == buffer.cursor_position
+        and getattr(buffer, "_nanobot_visual_last_text", None) == buffer.text
+    )
+
+
+def _remember_visual_anchor(buffer: Any, delta: int) -> None:
+    """Remember current position as anchor baseline for next up/down key."""
+    setattr(buffer, "_nanobot_visual_last_dir", delta)
+    setattr(buffer, "_nanobot_visual_last_cursor", buffer.cursor_position)
+    setattr(buffer, "_nanobot_visual_last_text", buffer.text)
+
+
 def _move_buffer_cursor_visual_from_render(
     buffer: Any,
     event: Any,
@@ -378,7 +410,11 @@ def _move_buffer_cursor_visual_from_render(
         return False
 
     moved_any = False
-    preferred_x = getattr(buffer, "_nanobot_visual_pref_x", None)
+    preferred_x = (
+        getattr(buffer, "_nanobot_visual_pref_x", None)
+        if _can_reuse_visual_anchor(buffer, delta)
+        else None
+    )
     steps = max(1, count)
 
     for _ in range(steps):
@@ -405,8 +441,9 @@ def _move_buffer_cursor_visual_from_render(
 
     if moved_any:
         setattr(buffer, "_nanobot_visual_pref_x", preferred_x)
+        _remember_visual_anchor(buffer, delta)
     else:
-        setattr(buffer, "_nanobot_visual_pref_x", None)
+        _clear_visual_nav_state(buffer)
 
     return moved_any
 
@@ -453,7 +490,11 @@ def _move_buffer_cursor_visual(
 ) -> bool:
     """Move prompt_toolkit buffer by visual rows. Returns whether cursor moved."""
     moved_any = False
-    preferred = getattr(buffer, "_nanobot_visual_pref_col", None)
+    preferred = (
+        getattr(buffer, "_nanobot_visual_pref_col", None)
+        if _can_reuse_visual_anchor(buffer, delta)
+        else None
+    )
     steps = max(1, count)
 
     for _ in range(steps):
@@ -472,8 +513,9 @@ def _move_buffer_cursor_visual(
 
     if moved_any:
         setattr(buffer, "_nanobot_visual_pref_col", preferred)
+        _remember_visual_anchor(buffer, delta)
     else:
-        setattr(buffer, "_nanobot_visual_pref_col", None)
+        _clear_visual_nav_state(buffer)
 
     return moved_any
 

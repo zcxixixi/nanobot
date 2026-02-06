@@ -250,3 +250,40 @@ def test_choose_visual_rowcol_returns_none_at_boundary() -> None:
 
     assert next_rowcol is None
     assert pref_x is None
+
+
+def test_can_reuse_visual_anchor_requires_continuity() -> None:
+    class FakeBuffer:
+        def __init__(self) -> None:
+            self.cursor_position = 5
+            self.text = "hello"
+
+    buf = FakeBuffer()
+    setattr(buf, "_nanobot_visual_last_dir", -1)
+    setattr(buf, "_nanobot_visual_last_cursor", 5)
+    setattr(buf, "_nanobot_visual_last_text", "hello")
+
+    assert commands._can_reuse_visual_anchor(buf, -1) is True
+
+    buf.cursor_position = 4
+    assert commands._can_reuse_visual_anchor(buf, -1) is False
+
+
+def test_clear_visual_nav_state_resets_cache() -> None:
+    class FakeBuffer:
+        pass
+
+    buf = FakeBuffer()
+    setattr(buf, "_nanobot_visual_pref_col", 3)
+    setattr(buf, "_nanobot_visual_pref_x", 10)
+    setattr(buf, "_nanobot_visual_last_dir", -1)
+    setattr(buf, "_nanobot_visual_last_cursor", 99)
+    setattr(buf, "_nanobot_visual_last_text", "abc")
+
+    commands._clear_visual_nav_state(buf)
+
+    assert getattr(buf, "_nanobot_visual_pref_col") is None
+    assert getattr(buf, "_nanobot_visual_pref_x") is None
+    assert getattr(buf, "_nanobot_visual_last_dir") is None
+    assert getattr(buf, "_nanobot_visual_last_cursor") is None
+    assert getattr(buf, "_nanobot_visual_last_text") is None
