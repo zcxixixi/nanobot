@@ -27,6 +27,7 @@ def test_read_interactive_input_colored_prompt_with_readline(monkeypatch) -> Non
         return "hello"
 
     monkeypatch.setattr(commands, "_READLINE", object())
+    monkeypatch.setattr(commands, "_USING_LIBEDIT", False)
     monkeypatch.setattr(builtins, "input", fake_input)
 
     value = commands._read_interactive_input()
@@ -34,6 +35,23 @@ def test_read_interactive_input_colored_prompt_with_readline(monkeypatch) -> Non
     assert value == "hello"
     assert "You:" in captured["prompt"]
     assert "\x1b[" in captured["prompt"]
+
+
+def test_read_interactive_input_colored_prompt_with_libedit(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_input(prompt: str = "") -> str:
+        captured["prompt"] = prompt
+        return "hello"
+
+    monkeypatch.setattr(commands, "_READLINE", object())
+    monkeypatch.setattr(commands, "_USING_LIBEDIT", True)
+    monkeypatch.setattr(builtins, "input", fake_input)
+
+    value = commands._read_interactive_input()
+
+    assert value == "hello"
+    assert captured["prompt"] == "\x1b[1;34mYou:\x1b[0m "
 
 
 def test_remember_input_history_dedupes_adjacent(monkeypatch) -> None:

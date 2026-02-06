@@ -21,6 +21,7 @@ console = Console()
 _READLINE: Any | None = None
 _HISTORY_FILE: Path | None = None
 _HISTORY_HOOK_REGISTERED = False
+_USING_LIBEDIT = False
 
 
 def _save_history() -> None:
@@ -48,7 +49,7 @@ def _remember_input_history(text: str) -> None:
 
 def _enable_line_editing() -> None:
     """Best-effort enable readline support for interactive input."""
-    global _READLINE, _HISTORY_FILE, _HISTORY_HOOK_REGISTERED
+    global _READLINE, _HISTORY_FILE, _HISTORY_HOOK_REGISTERED, _USING_LIBEDIT
     try:
         import readline
     except Exception:
@@ -56,8 +57,9 @@ def _enable_line_editing() -> None:
         return
     
     _READLINE = readline
+    _USING_LIBEDIT = "libedit" in (readline.__doc__ or "").lower()
     try:
-        if "libedit" in (readline.__doc__ or ""):
+        if _USING_LIBEDIT:
             readline.parse_and_bind("bind ^I rl_complete")
         else:
             readline.parse_and_bind("tab: complete")
@@ -96,7 +98,12 @@ def _read_interactive_input() -> str:
     if _READLINE is None:
         return input("You: ")
 
-    # \001...\002 marks non-printing chars for readline's prompt width logic.
+    # libedit (macOS default) does not reliably honor GNU readline's \001/\002
+    # prompt markers for ANSI sequences, so use a plain ANSI prompt there.
+    if _USING_LIBEDIT:
+        return input("\033[1;34mYou:\033[0m ")
+
+    # GNU readline: mark non-printing ANSI bytes for correct cursor math.
     return input("\001\033[1;34m\002You:\001\033[0m\002 ")
 
 
