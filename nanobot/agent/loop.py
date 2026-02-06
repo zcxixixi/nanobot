@@ -326,6 +326,8 @@ class AgentLoop:
         Returns:
             The agent's response.
         """
+        channel, chat_id = self._resolve_direct_context(session_key, channel, chat_id)
+
         msg = InboundMessage(
             channel="cli",
             sender_id="user",
@@ -335,3 +337,30 @@ class AgentLoop:
         
         response = await self._process_message(msg)
         return response.content if response else ""
+
+    @staticmethod
+    def _resolve_direct_context(
+        session_key: str,
+        channel: str,
+        chat_id: str,
+    ) -> tuple[str, str]:
+        """
+        Resolve channel/chat_id for direct calls.
+
+        `session_key` is only used when callers keep default CLI context.
+        Explicit channel/chat_id overrides always win.
+        """
+        # Respect explicit context passed by caller (e.g. cron delivery path).
+        if channel != "cli" or chat_id != "direct":
+            return channel, chat_id
+
+        if not session_key:
+            return channel, chat_id
+
+        # session_key format: "channel:chat_id"
+        if ":" in session_key:
+            resolved_channel, resolved_chat_id = session_key.split(":", 1)
+            return resolved_channel or channel, resolved_chat_id or chat_id
+
+        # Backward-compatible shorthand: "my-session" => "cli:my-session"
+        return channel, session_key
