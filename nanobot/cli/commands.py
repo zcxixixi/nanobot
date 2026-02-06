@@ -31,11 +31,10 @@ def _read_interactive_input() -> str:
     """
     Read a single interactive input line.
 
-    We avoid ANSI markup inside the raw input prompt string because some
-    terminals/editline setups can render arrow-key escape sequences.
+    Use a plain prompt string so readline/editline can correctly account
+    for prompt width during line redraw (arrow keys, IME composition, etc.).
     """
-    console.print("[bold blue]You:[/bold blue] ", end="")
-    return input()
+    return input("You: ")
 
 
 def version_callback(value: bool):
@@ -725,4 +724,3 @@ def status():
 
 if __name__ == "__main__":
     app()
-
