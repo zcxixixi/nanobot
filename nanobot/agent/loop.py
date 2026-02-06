@@ -315,13 +315,21 @@ class AgentLoop:
             content=final_content
         )
     
-    async def process_direct(self, content: str, session_key: str = "cli:direct") -> str:
+    async def process_direct(
+        self,
+        content: str,
+        session_key: str = "cli:direct",
+        channel: str = "cli",
+        chat_id: str = "direct",
+    ) -> str:
         """
-        Process a message directly (for CLI usage).
+        Process a message directly (for CLI or cron usage).
         
         Args:
             content: The message content.
             session_key: Session identifier.
+            channel: Source channel (for context).
+            chat_id: Source chat ID (for context).
         
         Returns:
             The agent's response.
@@ -329,9 +337,9 @@ class AgentLoop:
         channel, chat_id = self._resolve_direct_context(session_key, channel, chat_id)
 
         msg = InboundMessage(
-            channel="cli",
+            channel=channel,
             sender_id="user",
-            chat_id="direct",
+            chat_id=chat_id,
             content=content
         )
         
