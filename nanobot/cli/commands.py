@@ -18,6 +18,26 @@ app = typer.Typer(
 console = Console()
 
 
+def _enable_line_editing() -> None:
+    """Best-effort enable readline support for interactive input."""
+    try:
+        import readline  # noqa: F401
+    except Exception:
+        # Not available on all platforms; plain input still works.
+        return
+
+
+def _read_interactive_input() -> str:
+    """
+    Read a single interactive input line.
+
+    We avoid ANSI markup inside the raw input prompt string because some
+    terminals/editline setups can render arrow-key escape sequences.
+    """
+    console.print("[bold blue]You:[/bold blue] ", end="")
+    return input()
+
+
 def version_callback(value: bool):
     if value:
         console.print(f"{__logo__} nanobot v{__version__}")
@@ -327,12 +347,13 @@ def agent(
         asyncio.run(run_once())
     else:
         # Interactive mode
+        _enable_line_editing()
         console.print(f"{__logo__} Interactive mode (Ctrl+C to exit)\n")
         
         async def run_interactive():
             while True:
                 try:
-                    user_input = console.input("[bold blue]You:[/bold blue] ")
+                    user_input = _read_interactive_input()
                     if not user_input.strip():
                         continue
                     
