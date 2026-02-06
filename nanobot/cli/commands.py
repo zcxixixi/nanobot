@@ -2,7 +2,10 @@
 
 import asyncio
 import atexit
+import os
 from pathlib import Path
+import select
+import sys
 from typing import Any
 
 import typer
@@ -24,6 +27,14 @@ _HISTORY_HOOK_REGISTERED = False
 _USING_LIBEDIT = False
 _PROMPT_SESSION: Any | None = None
 _PROMPT_SESSION_LABEL: Any = None
+_PROMPT_TEXT = "You: "
+_DEFAULT_TERMINAL_COLUMNS = 80
+
+try:
+    from wcwidth import wcwidth as _wcwidth
+except Exception:
+    def _wcwidth(_char: str) -> int:  # type: ignore[no-redef]
+        return 1
 
 
 def _save_history() -> None:
@@ -73,11 +84,33 @@ def _enable_line_editing() -> None:
 
         @key_bindings.add("up")
         def _handle_up(event) -> None:
-            event.current_buffer.auto_up(count=event.arg)
+            count = event.arg if event.arg and event.arg > 0 else 1
+            moved = _move_buffer_cursor_visual(
+                event.current_buffer,
+                delta=-1,
+                count=count,
+                columns=_get_terminal_columns(event),
+                prompt_columns=len(_PROMPT_TEXT),
+            )
+            if not moved:
+                event.current_buffer.history_backward(count=count)
+                event.current_buffer.preferred_column = None
+                setattr(event.current_buffer, "_nanobot_visual_pref_col", None)
 
         @key_bindings.add("down")
         def _handle_down(event) -> None:
-            event.current_buffer.auto_down(count=event.arg)
+            count = event.arg if event.arg and event.arg > 0 else 1
+            moved = _move_buffer_cursor_visual(
+                event.current_buffer,
+                delta=1,
+                count=count,
+                columns=_get_terminal_columns(event),
+                prompt_columns=len(_PROMPT_TEXT),
+            )
+            if not moved:
+                event.current_buffer.history_forward(count=count)
+                event.current_buffer.preferred_column = None
+                setattr(event.current_buffer, "_nanobot_visual_pref_col", None)
 
         _PROMPT_SESSION = PromptSession(
             history=FileHistory(str(history_file)),
@@ -86,7 +119,7 @@ def _enable_line_editing() -> None:
             key_bindings=key_bindings,
             complete_while_typing=False,
         )
-        _PROMPT_SESSION_LABEL = ANSI("\x1b[1;34mYou:\x1b[0m ")
+        _PROMPT_SESSION_LABEL = ANSI(f"\x1b[1;34m{_PROMPT_TEXT.strip()}\x1b[0m ")
         _READLINE = None
         _USING_LIBEDIT = False
         return
@@ -143,15 +176,15 @@ def _read_interactive_input() -> str:
             raise KeyboardInterrupt from exc
 
     if _READLINE is None:
-        return input("You: ")
+        return input(_PROMPT_TEXT)
 
     # libedit (macOS default) does not reliably honor GNU readline's \001/\002
     # prompt markers for ANSI sequences, so use a plain ANSI prompt there.
     if _USING_LIBEDIT:
-        return input("\033[1;34mYou:\033[0m ")
+        return input(f"\033[1;34m{_PROMPT_TEXT.strip()}\033[0m ")
 
     # GNU readline: mark non-printing ANSI bytes for correct cursor math.
-    return input("\001\033[1;34m\002You:\001\033[0m\002 ")
+    return input(f"\001\033[1;34m\002{_PROMPT_TEXT.strip()}\001\033[0m\002 ")
 
 
 async def _read_interactive_input_async() -> str:
@@ -162,6 +195,173 @@ async def _read_interactive_input_async() -> str:
         except EOFError as exc:
             raise KeyboardInterrupt from exc
     return _read_interactive_input()
+
+
+def _get_terminal_columns(event: Any) -> int:
+    """Best-effort current terminal width."""
+    try:
+        columns = int(event.app.output.get_size().columns)
+        return columns if columns > 0 else _DEFAULT_TERMINAL_COLUMNS
+    except Exception:
+        return _DEFAULT_TERMINAL_COLUMNS
+
+
+def _flush_pending_tty_input() -> None:
+    """
+    Drop unread keypresses typed while the model was generating output.
+    This prevents escape sequences like '^[[A' from leaking into the next prompt.
+    """
+    try:
+        fd = sys.stdin.fileno()
+        if not os.isatty(fd):
+            return
+    except Exception:
+        return
+
+    # Preferred: tty input queue flush on POSIX.
+    try:
+        import termios
+
+        termios.tcflush(fd, termios.TCIFLUSH)
+        return
+    except Exception:
+        pass
+
+    # Fallback: non-blocking drain.
+    try:
+        while True:
+            ready, _, _ = select.select([fd], [], [], 0)
+            if not ready:
+                break
+            if not os.read(fd, 4096):
+                break
+    except Exception:
+        return
+
+
+def _compute_visual_positions(
+    text: str,
+    columns: int,
+    prompt_columns: int,
+) -> list[tuple[int, int]]:
+    """
+    Compute (row, col) for every cursor index in text, accounting for CJK width
+    and soft wrapping.
+    """
+    width = max(1, columns)
+    row = 0
+    col = max(0, prompt_columns)
+    positions: list[tuple[int, int]] = [(row, col)]
+
+    for char in text:
+        if char == "\n":
+            row += 1
+            col = 0
+            positions.append((row, col))
+            continue
+
+        char_width = _wcwidth(char)
+        if char_width < 0:
+            char_width = 1
+
+        if char_width > 0 and col + char_width > width:
+            row += 1
+            col = 0
+
+        if char_width > 0:
+            col += char_width
+
+        positions.append((row, col))
+
+    return positions
+
+
+def _find_cursor_for_row_and_column(
+    positions: list[tuple[int, int]],
+    target_row: int,
+    preferred_column: int,
+) -> int | None:
+    """Find closest cursor index in a row by preferred display column."""
+    row_indices = [i for i, (row, _) in enumerate(positions) if row == target_row]
+    if not row_indices:
+        return None
+
+    # Use nearest display column to avoid diagonal drift on CJK wide chars.
+    return min(
+        row_indices,
+        key=lambda i: (
+            abs(positions[i][1] - preferred_column),
+            positions[i][1] < preferred_column,
+            positions[i][1],
+        ),
+    )
+
+
+def _move_cursor_visual(
+    text: str,
+    cursor_position: int,
+    delta: int,
+    columns: int,
+    prompt_columns: int,
+    preferred_column: int | None = None,
+) -> tuple[int, bool, int | None]:
+    """Move cursor by one visual line (soft-wrap aware)."""
+    if delta not in (-1, 1):
+        return cursor_position, False, preferred_column
+
+    positions = _compute_visual_positions(text, columns, prompt_columns)
+    if cursor_position < 0:
+        cursor_position = 0
+    if cursor_position >= len(positions):
+        cursor_position = len(positions) - 1
+
+    current_row, current_col = positions[cursor_position]
+    target_row = current_row + delta
+    max_row = positions[-1][0]
+    if target_row < 0 or target_row > max_row:
+        return cursor_position, False, preferred_column
+
+    target_col = current_col if preferred_column is None else preferred_column
+    new_position = _find_cursor_for_row_and_column(positions, target_row, target_col)
+    if new_position is None:
+        return cursor_position, False, preferred_column
+    if new_position == cursor_position:
+        return cursor_position, False, preferred_column
+    return new_position, True, target_col
+
+
+def _move_buffer_cursor_visual(
+    buffer: Any,
+    delta: int,
+    count: int,
+    columns: int,
+    prompt_columns: int,
+) -> bool:
+    """Move prompt_toolkit buffer by visual rows. Returns whether cursor moved."""
+    moved_any = False
+    preferred = getattr(buffer, "_nanobot_visual_pref_col", None)
+    steps = max(1, count)
+
+    for _ in range(steps):
+        new_pos, moved, preferred = _move_cursor_visual(
+            text=buffer.text,
+            cursor_position=buffer.cursor_position,
+            delta=delta,
+            columns=columns,
+            prompt_columns=prompt_columns,
+            preferred_column=preferred,
+        )
+        if not moved:
+            break
+        buffer.cursor_position = new_pos
+        moved_any = True
+
+    if moved_any:
+        setattr(buffer, "_nanobot_visual_pref_col", preferred)
+    else:
+        setattr(buffer, "_nanobot_visual_pref_col", None)
+
+    return moved_any
 
 
 def version_callback(value: bool):
@@ -518,6 +718,7 @@ def agent(
         async def run_interactive():
             while True:
                 try:
+                    _flush_pending_tty_input()
                     user_input = await _read_interactive_input_async()
                     if not user_input.strip():
                         continue

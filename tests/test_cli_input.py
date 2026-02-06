@@ -147,3 +147,68 @@ def test_remember_input_history_dedupes_adjacent(monkeypatch) -> None:
     commands._remember_input_history("xyz")
 
     assert fake.items == ["abc", "xyz"]
+
+
+def test_compute_visual_positions_wraps_wide_chars() -> None:
+    positions = commands._compute_visual_positions(
+        text="哈哈哈哈",
+        columns=8,
+        prompt_columns=4,
+    )
+
+    assert positions[0] == (0, 4)
+    assert positions[1] == (0, 6)
+    assert positions[2] == (0, 8)
+    assert positions[3] == (1, 2)
+    assert positions[4] == (1, 4)
+
+
+def test_move_cursor_visual_moves_across_soft_wrapped_lines() -> None:
+    text = "哈哈哈哈哈哈"
+    end = len(text)
+
+    new_pos, moved, preferred = commands._move_cursor_visual(
+        text=text,
+        cursor_position=end,
+        delta=-1,
+        columns=10,
+        prompt_columns=4,
+        preferred_column=None,
+    )
+
+    assert moved is True
+    assert new_pos < end
+    assert preferred is not None
+
+
+def test_move_cursor_visual_returns_false_at_boundary() -> None:
+    new_pos, moved, preferred = commands._move_cursor_visual(
+        text="hello",
+        cursor_position=0,
+        delta=-1,
+        columns=80,
+        prompt_columns=4,
+        preferred_column=None,
+    )
+
+    assert moved is False
+    assert new_pos == 0
+    assert preferred is None
+
+
+def test_find_cursor_for_row_and_column_uses_nearest_column() -> None:
+    positions = [
+        (0, 4),
+        (0, 6),
+        (1, 0),
+        (1, 2),
+        (1, 4),
+        (1, 6),
+    ]
+
+    idx = commands._find_cursor_for_row_and_column(
+        positions=positions,
+        target_row=1,
+        preferred_column=5,
+    )
+    assert idx == 5
