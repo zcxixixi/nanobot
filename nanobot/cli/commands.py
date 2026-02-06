@@ -1,7 +1,9 @@
 ﻿"""CLI commands for nanobot."""
 
 import asyncio
+import atexit
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -16,25 +18,86 @@ app = typer.Typer(
 )
 
 console = Console()
+_READLINE: Any | None = None
+_HISTORY_FILE: Path | None = None
+_HISTORY_HOOK_REGISTERED = False
+
+
+def _save_history() -> None:
+    """Persist interactive input history on process exit."""
+    if _READLINE is None or _HISTORY_FILE is None:
+        return
+    try:
+        _READLINE.write_history_file(str(_HISTORY_FILE))
+    except Exception:
+        return
+
+
+def _remember_input_history(text: str) -> None:
+    """Append input text to readline history (dedupe adjacent entries)."""
+    if _READLINE is None:
+        return
+    try:
+        history_len = _READLINE.get_current_history_length()
+        last = _READLINE.get_history_item(history_len) if history_len > 0 else None
+        if last != text:
+            _READLINE.add_history(text)
+    except Exception:
+        return
 
 
 def _enable_line_editing() -> None:
     """Best-effort enable readline support for interactive input."""
+    global _READLINE, _HISTORY_FILE, _HISTORY_HOOK_REGISTERED
     try:
-        import readline  # noqa: F401
+        import readline
     except Exception:
         # Not available on all platforms; plain input still works.
         return
+    
+    _READLINE = readline
+    try:
+        if "libedit" in (readline.__doc__ or ""):
+            readline.parse_and_bind("bind ^I rl_complete")
+        else:
+            readline.parse_and_bind("tab: complete")
+        readline.parse_and_bind("set editing-mode emacs")
+    except Exception:
+        pass
+
+    history_file = Path.home() / ".nanobot" / "history" / "cli_history"
+    history_file.parent.mkdir(parents=True, exist_ok=True)
+    _HISTORY_FILE = history_file
+
+    try:
+        readline.read_history_file(str(history_file))
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+    try:
+        readline.set_history_length(1000)
+    except Exception:
+        pass
+
+    if not _HISTORY_HOOK_REGISTERED:
+        atexit.register(_save_history)
+        _HISTORY_HOOK_REGISTERED = True
 
 
 def _read_interactive_input() -> str:
     """
     Read a single interactive input line.
 
-    Use a plain prompt string so readline/editline can correctly account
-    for prompt width during line redraw (arrow keys, IME composition, etc.).
+    Keep a colored prompt while preserving correct cursor math in readline
+    by marking non-printing ANSI escape sequences.
     """
-    return input("You: ")
+    if _READLINE is None:
+        return input("You: ")
+
+    # \001...\002 marks non-printing chars for readline's prompt width logic.
+    return input("\001\033[1;34m\002You:\001\033[0m\002 ")
 
 
 def version_callback(value: bool):
@@ -394,6 +457,7 @@ def agent(
                     user_input = _read_interactive_input()
                     if not user_input.strip():
                         continue
+                    _remember_input_history(user_input)
                     
                     response = await agent_loop.process_direct(user_input, session_id)
                     console.print(f"\n{__logo__} {response}\n")
