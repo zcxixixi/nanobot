@@ -212,3 +212,41 @@ def test_find_cursor_for_row_and_column_uses_nearest_column() -> None:
         preferred_column=5,
     )
     assert idx == 5
+
+
+def test_choose_visual_rowcol_moves_to_same_screen_column() -> None:
+    rowcol_to_yx = {
+        (0, 0): (0, 5),
+        (0, 1): (0, 7),
+        (0, 2): (0, 9),
+        (0, 3): (1, 1),
+        (0, 4): (1, 3),
+        (0, 5): (1, 5),
+    }
+
+    next_rowcol, pref_x = commands._choose_visual_rowcol(
+        rowcol_to_yx=rowcol_to_yx,
+        current_rowcol=(0, 4),  # y=1, x=3
+        delta=-1,
+        preferred_x=None,
+    )
+
+    assert next_rowcol == (0, 0)  # y=0, x=5 is nearest to x=3 among top row
+    assert pref_x == 3
+
+
+def test_choose_visual_rowcol_returns_none_at_boundary() -> None:
+    rowcol_to_yx = {
+        (0, 0): (0, 5),
+        (0, 1): (0, 7),
+    }
+
+    next_rowcol, pref_x = commands._choose_visual_rowcol(
+        rowcol_to_yx=rowcol_to_yx,
+        current_rowcol=(0, 1),
+        delta=-1,
+        preferred_x=None,
+    )
+
+    assert next_rowcol is None
+    assert pref_x is None

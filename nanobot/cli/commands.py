@@ -85,32 +85,48 @@ def _enable_line_editing() -> None:
         @key_bindings.add("up")
         def _handle_up(event) -> None:
             count = event.arg if event.arg and event.arg > 0 else 1
-            moved = _move_buffer_cursor_visual(
+            moved = _move_buffer_cursor_visual_from_render(
                 event.current_buffer,
+                event=event,
                 delta=-1,
                 count=count,
-                columns=_get_terminal_columns(event),
-                prompt_columns=len(_PROMPT_TEXT),
             )
+            if not moved:
+                moved = _move_buffer_cursor_visual(
+                    event.current_buffer,
+                    delta=-1,
+                    count=count,
+                    columns=_get_terminal_columns(event),
+                    prompt_columns=len(_PROMPT_TEXT),
+                )
             if not moved:
                 event.current_buffer.history_backward(count=count)
                 event.current_buffer.preferred_column = None
                 setattr(event.current_buffer, "_nanobot_visual_pref_col", None)
+                setattr(event.current_buffer, "_nanobot_visual_pref_x", None)
 
         @key_bindings.add("down")
         def _handle_down(event) -> None:
             count = event.arg if event.arg and event.arg > 0 else 1
-            moved = _move_buffer_cursor_visual(
+            moved = _move_buffer_cursor_visual_from_render(
                 event.current_buffer,
+                event=event,
                 delta=1,
                 count=count,
-                columns=_get_terminal_columns(event),
-                prompt_columns=len(_PROMPT_TEXT),
             )
+            if not moved:
+                moved = _move_buffer_cursor_visual(
+                    event.current_buffer,
+                    delta=1,
+                    count=count,
+                    columns=_get_terminal_columns(event),
+                    prompt_columns=len(_PROMPT_TEXT),
+                )
             if not moved:
                 event.current_buffer.history_forward(count=count)
                 event.current_buffer.preferred_column = None
                 setattr(event.current_buffer, "_nanobot_visual_pref_col", None)
+                setattr(event.current_buffer, "_nanobot_visual_pref_x", None)
 
         _PROMPT_SESSION = PromptSession(
             history=FileHistory(str(history_file)),
@@ -295,6 +311,104 @@ def _find_cursor_for_row_and_column(
             positions[i][1],
         ),
     )
+
+
+def _choose_visual_rowcol(
+    rowcol_to_yx: dict[tuple[int, int], tuple[int, int]],
+    current_rowcol: tuple[int, int],
+    delta: int,
+    preferred_x: int | None = None,
+) -> tuple[tuple[int, int] | None, int | None]:
+    """Choose next row/col by rendered screen coordinates."""
+    if delta not in (-1, 1):
+        return None, preferred_x
+
+    current_yx = rowcol_to_yx.get(current_rowcol)
+    if current_yx is None:
+        same_row = [
+            (rowcol, yx)
+            for rowcol, yx in rowcol_to_yx.items()
+            if rowcol[0] == current_rowcol[0]
+        ]
+        if not same_row:
+            return None, preferred_x
+        _, current_yx = min(
+            same_row,
+            key=lambda item: abs(item[0][1] - current_rowcol[1]),
+        )
+
+    target_x = current_yx[1] if preferred_x is None else preferred_x
+    target_y = current_yx[0] + delta
+    candidates = [
+        (rowcol, yx)
+        for rowcol, yx in rowcol_to_yx.items()
+        if yx[0] == target_y
+    ]
+    if not candidates:
+        return None, preferred_x
+
+    best_rowcol, _ = min(
+        candidates,
+        key=lambda item: (
+            abs(item[1][1] - target_x),
+            item[1][1] < target_x,
+            item[1][1],
+        ),
+    )
+    return best_rowcol, target_x
+
+
+def _move_buffer_cursor_visual_from_render(
+    buffer: Any,
+    event: Any,
+    delta: int,
+    count: int,
+) -> bool:
+    """
+    Move cursor by rendered screen rows using prompt_toolkit render map.
+    This is the most accurate path for wide chars and soft wraps.
+    """
+    try:
+        window = event.app.layout.current_window
+        render_info = getattr(window, "render_info", None)
+        rowcol_to_yx = getattr(render_info, "_rowcol_to_yx", None)
+        if not isinstance(rowcol_to_yx, dict) or not rowcol_to_yx:
+            return False
+    except Exception:
+        return False
+
+    moved_any = False
+    preferred_x = getattr(buffer, "_nanobot_visual_pref_x", None)
+    steps = max(1, count)
+
+    for _ in range(steps):
+        doc = buffer.document
+        current_rowcol = (doc.cursor_position_row, doc.cursor_position_col)
+        next_rowcol, preferred_x = _choose_visual_rowcol(
+            rowcol_to_yx=rowcol_to_yx,
+            current_rowcol=current_rowcol,
+            delta=delta,
+            preferred_x=preferred_x,
+        )
+        if next_rowcol is None:
+            break
+
+        try:
+            new_position = doc.translate_row_col_to_index(*next_rowcol)
+        except Exception:
+            break
+        if new_position == buffer.cursor_position:
+            break
+
+        buffer.cursor_position = new_position
+        moved_any = True
+
+    if moved_any:
+        setattr(buffer, "_nanobot_visual_pref_x", preferred_x)
+    else:
+        setattr(buffer, "_nanobot_visual_pref_x", None)
+
+    return moved_any
 
 
 def _move_cursor_visual(
