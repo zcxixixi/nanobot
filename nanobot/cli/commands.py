@@ -169,13 +169,13 @@ def _make_provider(config):
     """Create provider from config. Supports OpenAI Codex OAuth and API-key providers."""
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-    from nanobot.auth.codex import ensure_codex_token_available
+    from nanobot.auth.codex import get_codex_token
 
     p = config.get_provider()
     model = config.agents.defaults.model
     if model.startswith("openai-codex/"):
         try:
-            ensure_codex_token_available()
+            _ = get_codex_token()
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
             console.print("Please run: [cyan]nanobot login --provider openai-codex[/cyan]")
