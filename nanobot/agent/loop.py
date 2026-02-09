@@ -242,7 +242,9 @@ class AgentLoop:
                 "Use Python standard library curses only (no tkinter, no pygame). "
                 "Support manual controls and continuous auto-bot play mode toggle. "
                 "Include movement, rotation, line clearing, scoring, increasing speed, "
-                "game over, and restart key."
+                "game over, and restart key. "
+                "Important: do NOT run python3 tetris_bot.py in this environment "
+                "(non-interactive/non-TTY). Validate with python3 -m py_compile only."
             )
             return (
                 f"which opencode && opencode run {shlex.quote(prompt)}"
@@ -255,7 +257,9 @@ class AgentLoop:
                 "Create a single-file Python Tetris game named tetris.py. "
                 "Use Python standard library curses only (no tkinter, no pygame). "
                 "Include movement, rotation, line clearing, scoring, increasing speed, "
-                "game over, and restart key."
+                "game over, and restart key. "
+                "Important: do NOT run python3 tetris.py in this environment "
+                "(non-interactive/non-TTY). Validate with python3 -m py_compile only."
             )
             return (
                 f"which opencode && opencode run {shlex.quote(prompt)}"

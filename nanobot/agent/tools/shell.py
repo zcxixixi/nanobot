@@ -108,8 +108,8 @@ class ExecTool(Tool):
             await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
 
             output_parts = []
-            stdout_text = "".join(stdout_parts)
-            stderr_text = "".join(stderr_parts)
+            stdout_text = self._sanitize_for_live_output("".join(stdout_parts))
+            stderr_text = self._sanitize_for_live_output("".join(stderr_parts))
 
             if stdout_text:
                 output_parts.append(stdout_text)
