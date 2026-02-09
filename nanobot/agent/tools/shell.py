@@ -162,8 +162,20 @@ class ExecTool(Tool):
             collector.append(text)
             if stream_live:
                 target = sys.stderr if to_stderr else sys.stdout
-                target.write(text)
+                target.write(self._sanitize_for_live_output(text))
                 target.flush()
+
+    @staticmethod
+    def _sanitize_for_live_output(text: str) -> str:
+        """
+        Remove terminal control sequences that can clear/corrupt the screen
+        in embedded terminals while keeping readable logs.
+        """
+        # Strip ANSI CSI/OSC escapes and normalize carriage returns.
+        # Example removed: \x1b[2J (clear), \x1b[H (cursor home), OSC titles.
+        text = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"\x1B\][^\x07]*(?:\x07|\x1B\\)", "", text)
+        return text.replace("\r", "\n")
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
         """Best-effort safety guard for potentially destructive commands."""

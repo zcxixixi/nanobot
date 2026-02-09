@@ -112,6 +112,14 @@ async def test_exec_tool_timeout_override() -> None:
     assert "timed out" not in result.lower()
 
 
+def test_exec_tool_sanitizes_live_output_control_sequences() -> None:
+    raw = "\x1b[2J\x1b[Hhello\rworld\x1b]0;title\x07"
+    cleaned = ExecTool._sanitize_for_live_output(raw)
+    assert "\x1b" not in cleaned
+    assert "hello" in cleaned
+    assert "world" in cleaned
+
+
 def test_load_config_supports_nested_env_override(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(
