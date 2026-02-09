@@ -246,10 +246,10 @@ class AgentLoop:
                 "Important: do NOT run python3 tetris_bot.py in this environment "
                 "(non-interactive/non-TTY). Validate with python3 -m py_compile only."
             )
-            return (
-                f"which opencode && opencode run {shlex.quote(prompt)}"
-                " && ls -la tetris_bot.py"
-                " && python3 -m py_compile tetris_bot.py"
+            return self._build_opencode_file_command(
+                prompt,
+                file_name="tetris_bot.py",
+                checks=["ls -la tetris_bot.py", "python3 -m py_compile tetris_bot.py"],
             )
 
         if "tetris" in lower or "俄罗斯方块" in content:
@@ -261,10 +261,10 @@ class AgentLoop:
                 "Important: do NOT run python3 tetris.py in this environment "
                 "(non-interactive/non-TTY). Validate with python3 -m py_compile only."
             )
-            return (
-                f"which opencode && opencode run {shlex.quote(prompt)}"
-                " && ls -la tetris.py"
-                " && python3 -m py_compile tetris.py"
+            return self._build_opencode_file_command(
+                prompt,
+                file_name="tetris.py",
+                checks=["ls -la tetris.py", "python3 -m py_compile tetris.py"],
             )
 
         if ("web demo" in lower or ("demo" in lower and "desktop" in lower)) and (
@@ -277,12 +277,26 @@ class AgentLoop:
             return (
                 "which opencode"
                 " && cd ~/Desktop"
-                f" && opencode run {shlex.quote(prompt)}"
+                " && OPENCODE_LOG=$(mktemp -t nanobot-opencode.XXXXXX.log)"
+                f" && if ! opencode run {shlex.quote(prompt)} >\"$OPENCODE_LOG\" 2>&1; then "
+                "code=$?; echo \"opencode failed (exit code: $code)\"; tail -n 80 \"$OPENCODE_LOG\"; exit $code; fi"
                 " && ls -la web_demo.py"
                 " && python3 -m py_compile web_demo.py"
             )
 
         return f"which opencode && opencode run {shlex.quote(content)}"
+
+    @staticmethod
+    def _build_opencode_file_command(prompt: str, file_name: str, checks: list[str]) -> str:
+        """Build a quieter opencode run command for file-generation flows."""
+        checks_part = "".join(f" && {c}" for c in checks)
+        return (
+            "which opencode"
+            " && OPENCODE_LOG=$(mktemp -t nanobot-opencode.XXXXXX.log)"
+            f" && if ! opencode run {shlex.quote(prompt)} >\"$OPENCODE_LOG\" 2>&1; then "
+            "code=$?; echo \"opencode failed (exit code: $code)\"; tail -n 80 \"$OPENCODE_LOG\"; exit $code; fi"
+            f"{checks_part}"
+        )
     
     async def _process_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
