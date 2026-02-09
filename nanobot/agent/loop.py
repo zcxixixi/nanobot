@@ -243,6 +243,9 @@ class AgentLoop:
                 "Support manual controls and continuous auto-bot play mode toggle. "
                 "Include movement, rotation, line clearing, scoring, increasing speed, "
                 "game over, and restart key. "
+                "Use ASCII-only rendering (no emoji/CJK/full-width glyphs). "
+                "Add safe draw helpers that never write outside terminal bounds, "
+                "and show a clear 'terminal too small' message instead of crashing. "
                 "Important: do NOT run python3 tetris_bot.py in this environment "
                 "(non-interactive/non-TTY). Validate with python3 -m py_compile only."
             )
@@ -258,6 +261,9 @@ class AgentLoop:
                 "Use Python standard library curses only (no tkinter, no pygame). "
                 "Include movement, rotation, line clearing, scoring, increasing speed, "
                 "game over, and restart key. "
+                "Use ASCII-only rendering (no emoji/CJK/full-width glyphs). "
+                "Add safe draw helpers that never write outside terminal bounds, "
+                "and show a clear 'terminal too small' message instead of crashing. "
                 "Important: do NOT run python3 tetris.py in this environment "
                 "(non-interactive/non-TTY). Validate with python3 -m py_compile only."
             )
