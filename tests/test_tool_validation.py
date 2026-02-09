@@ -151,6 +151,22 @@ def test_nl_opencode_route_snake_quiet_command() -> None:
     assert "snake.py" in cmd
 
 
+def test_nl_opencode_route_colloquial_cn_snake_autoplay() -> None:
+    loop = object.__new__(AgentLoop)
+    cmd = loop._extract_nl_opencode_command("我要玩贪吃蛇，但是要让他自己展示")
+    assert cmd is not None
+    assert "snake_bot.py" in cmd
+    assert "opencode run" in cmd
+
+
+def test_nl_opencode_route_colloquial_cn_tetris_autoplay() -> None:
+    loop = object.__new__(AgentLoop)
+    cmd = loop._extract_nl_opencode_command("能不能做一个自己玩的俄罗斯方块")
+    assert cmd is not None
+    assert "tetris_bot.py" in cmd
+    assert "opencode run" in cmd
+
+
 def test_load_config_supports_nested_env_override(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(

@@ -211,11 +211,19 @@ class AgentLoop:
             return None
         lower = content.lower()
 
+        game_tokens = ("贪吃蛇", "俄罗斯方块", "snake", "tetris")
+        auto_tokens = ("自己玩", "自动", "自己展示", "展示", "autoplay", "auto", "bot")
+        request_tokens = ("我要", "给我", "能不能", "做", "来个", "整一个", "生成", "创建", "写", "请")
+        wants_game_demo = (
+            any(token in content or token in lower for token in game_tokens)
+            and any(token in content or token in lower for token in auto_tokens + request_tokens)
+        )
+
         wants_file_generation = (
             ".py" in lower
             and any(token in content or token in lower for token in ("给我一版", "完整代码", "然后运行", "生成", "创建", "写"))
         )
-        if "opencode" not in lower and not wants_file_generation:
+        if "opencode" not in lower and not wants_file_generation and not wants_game_demo:
             return None
 
         help_like = (
@@ -233,10 +241,14 @@ class AgentLoop:
             "please", "pls", "plz", "build", "create", "creat", "make", "write",
             "can you", "could you", "use opencode to",
         )
-        if not any(token in content or token in lower for token in intent_tokens):
+        if not wants_game_demo and not any(token in content or token in lower for token in intent_tokens):
             return None
 
-        if "tetris_bot.py" in lower or ("tetris" in lower and "bot" in lower):
+        if (
+            "tetris_bot.py" in lower
+            or ("tetris" in lower and "bot" in lower)
+            or ("俄罗斯方块" in content and any(t in content or t in lower for t in auto_tokens))
+        ):
             prompt = (
                 "Create a single-file Python Tetris bot game named tetris_bot.py. "
                 "Use Python standard library curses only (no tkinter, no pygame). "
@@ -255,7 +267,11 @@ class AgentLoop:
                 checks=["ls -la tetris_bot.py", "python3 -m py_compile tetris_bot.py"],
             )
 
-        if "snake_bot.py" in lower or ("snake" in lower and "bot" in lower):
+        if (
+            "snake_bot.py" in lower
+            or ("snake" in lower and "bot" in lower)
+            or ("贪吃蛇" in content and any(t in content or t in lower for t in auto_tokens))
+        ):
             prompt = (
                 "Create a single-file Python snake bot game named snake_bot.py. "
                 "Use Python standard library curses only (no tkinter, no pygame). "
