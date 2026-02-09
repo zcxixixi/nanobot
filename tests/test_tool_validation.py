@@ -135,6 +135,22 @@ def test_nl_opencode_route_help_query_returns_none() -> None:
     assert cmd is None
 
 
+def test_nl_opencode_route_snake_bot_quiet_command() -> None:
+    loop = object.__new__(AgentLoop)
+    cmd = loop._extract_nl_opencode_command("给我一版 snake_bot.py（manual+自动）然后运行")
+    assert cmd is not None
+    assert "OPENCODE_LOG=$(mktemp -t nanobot-opencode." in cmd
+    assert "snake_bot.py" in cmd
+
+
+def test_nl_opencode_route_snake_quiet_command() -> None:
+    loop = object.__new__(AgentLoop)
+    cmd = loop._extract_nl_opencode_command("请用 opencode 做一个 snake.py")
+    assert cmd is not None
+    assert "OPENCODE_LOG=$(mktemp -t nanobot-opencode." in cmd
+    assert "snake.py" in cmd
+
+
 def test_load_config_supports_nested_env_override(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(

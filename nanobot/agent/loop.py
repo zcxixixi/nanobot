@@ -255,6 +255,40 @@ class AgentLoop:
                 checks=["ls -la tetris_bot.py", "python3 -m py_compile tetris_bot.py"],
             )
 
+        if "snake_bot.py" in lower or ("snake" in lower and "bot" in lower):
+            prompt = (
+                "Create a single-file Python snake bot game named snake_bot.py. "
+                "Use Python standard library curses only (no tkinter, no pygame). "
+                "Support manual controls and continuous auto-bot play mode toggle key A. "
+                "Add safe draw helpers that never write outside terminal bounds, "
+                "and show a clear 'terminal too small' message instead of crashing. "
+                "Important: do NOT run python3 snake_bot.py in this environment "
+                "(non-interactive/non-TTY). Validate with python3 -m py_compile only. "
+                "Do not print full code in response."
+            )
+            return self._build_opencode_file_command(
+                prompt,
+                file_name="snake_bot.py",
+                checks=["ls -la snake_bot.py", "python3 -m py_compile snake_bot.py"],
+            )
+
+        if "snake.py" in lower or "贪吃蛇" in content or "snake" in lower:
+            prompt = (
+                "Create a single-file Python snake game named snake.py. "
+                "Use Python standard library curses only (no tkinter, no pygame). "
+                "Support manual controls and optional auto-bot mode toggle key A. "
+                "Add safe draw helpers that never write outside terminal bounds, "
+                "and show a clear 'terminal too small' message instead of crashing. "
+                "Important: do NOT run python3 snake.py in this environment "
+                "(non-interactive/non-TTY). Validate with python3 -m py_compile only. "
+                "Do not print full code in response."
+            )
+            return self._build_opencode_file_command(
+                prompt,
+                file_name="snake.py",
+                checks=["ls -la snake.py", "python3 -m py_compile snake.py"],
+            )
+
         if "tetris" in lower or "俄罗斯方块" in content:
             prompt = (
                 "Create a single-file Python Tetris game named tetris.py. "
