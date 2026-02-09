@@ -5,6 +5,7 @@ from typing import Any
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
+from nanobot.agent.loop import AgentLoop
 from nanobot.config.loader import load_config
 
 
@@ -118,6 +119,20 @@ def test_exec_tool_sanitizes_live_output_control_sequences() -> None:
     assert "\x1b" not in cleaned
     assert "hello" in cleaned
     assert "world" in cleaned
+
+
+def test_nl_opencode_route_tetris_bot_without_keyword() -> None:
+    loop = object.__new__(AgentLoop)
+    cmd = loop._extract_nl_opencode_command("给我一版 tetris_bot.py（支持 manual+bot），然后运行")
+    assert cmd is not None
+    assert "opencode run" in cmd
+    assert "tetris_bot.py" in cmd
+
+
+def test_nl_opencode_route_help_query_returns_none() -> None:
+    loop = object.__new__(AgentLoop)
+    cmd = loop._extract_nl_opencode_command("什么是opencode，怎么用？")
+    assert cmd is None
 
 
 def test_load_config_supports_nested_env_override(tmp_path: Path, monkeypatch) -> None:

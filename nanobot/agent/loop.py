@@ -210,7 +210,12 @@ class AgentLoop:
         if not content:
             return None
         lower = content.lower()
-        if "opencode" not in lower:
+
+        wants_file_generation = (
+            ".py" in lower
+            and any(token in content or token in lower for token in ("给我一版", "完整代码", "然后运行", "生成", "创建", "写"))
+        )
+        if "opencode" not in lower and not wants_file_generation:
             return None
 
         help_like = (
@@ -230,6 +235,20 @@ class AgentLoop:
         )
         if not any(token in content or token in lower for token in intent_tokens):
             return None
+
+        if "tetris_bot.py" in lower or ("tetris" in lower and "bot" in lower):
+            prompt = (
+                "Create a single-file Python Tetris bot game named tetris_bot.py. "
+                "Use Python standard library curses only (no tkinter, no pygame). "
+                "Support manual controls and continuous auto-bot play mode toggle. "
+                "Include movement, rotation, line clearing, scoring, increasing speed, "
+                "game over, and restart key."
+            )
+            return (
+                f"which opencode && opencode run {shlex.quote(prompt)}"
+                " && ls -la tetris_bot.py"
+                " && python3 -m py_compile tetris_bot.py"
+            )
 
         if "tetris" in lower or "俄罗斯方块" in content:
             prompt = (
