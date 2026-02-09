@@ -3,6 +3,7 @@
 import asyncio
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -55,13 +56,24 @@ class ExecTool(Tool):
                 "working_dir": {
                     "type": "string",
                     "description": "Optional working directory for the command"
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Optional timeout override in seconds for this command"
                 }
             },
             "required": ["command"]
         }
-    
-    async def execute(self, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
+
+    async def execute(
+        self,
+        command: str,
+        working_dir: str | None = None,
+        timeout: int | None = None,
+        **kwargs: Any,
+    ) -> str:
         cwd = working_dir or self.working_dir or os.getcwd()
+        exec_timeout = timeout if isinstance(timeout, int) and timeout > 0 else self.timeout
         guard_error = self._guard_command(command, cwd)
         if guard_error:
             return guard_error
@@ -73,40 +85,85 @@ class ExecTool(Tool):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
             )
-            
+
+            stdout_parts: list[str] = []
+            stderr_parts: list[str] = []
+            stream_live = self._stream_live_enabled()
+
+            stdout_task = asyncio.create_task(
+                self._drain_stream(process.stdout, stdout_parts, stream_live, to_stderr=False)
+            )
+            stderr_task = asyncio.create_task(
+                self._drain_stream(process.stderr, stderr_parts, stream_live, to_stderr=True)
+            )
+
+            timed_out = False
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=self.timeout
-                )
+                await asyncio.wait_for(process.wait(), timeout=exec_timeout)
             except asyncio.TimeoutError:
+                timed_out = True
                 process.kill()
-                return f"Error: Command timed out after {self.timeout} seconds"
-            
+                await process.wait()
+
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+
             output_parts = []
-            
-            if stdout:
-                output_parts.append(stdout.decode("utf-8", errors="replace"))
-            
-            if stderr:
-                stderr_text = stderr.decode("utf-8", errors="replace")
-                if stderr_text.strip():
-                    output_parts.append(f"STDERR:\n{stderr_text}")
-            
+            stdout_text = "".join(stdout_parts)
+            stderr_text = "".join(stderr_parts)
+
+            if stdout_text:
+                output_parts.append(stdout_text)
+            if stderr_text.strip():
+                output_parts.append(f"STDERR:\n{stderr_text}")
             if process.returncode != 0:
                 output_parts.append(f"\nExit code: {process.returncode}")
-            
+
+            if timed_out:
+                output_parts.append(f"\nError: Command timed out after {exec_timeout} seconds")
+
             result = "\n".join(output_parts) if output_parts else "(no output)"
-            
+
             # Truncate very long output
             max_len = 10000
             if len(result) > max_len:
                 result = result[:max_len] + f"\n... (truncated, {len(result) - max_len} more chars)"
-            
+
             return result
-            
+
         except Exception as e:
             return f"Error executing command: {str(e)}"
+
+    @staticmethod
+    def _stream_live_enabled() -> bool:
+        """
+        Enable live streaming by default on TTY, configurable via NANOBOT_EXEC_STREAM.
+        """
+        flag = os.getenv("NANOBOT_EXEC_STREAM", "1").strip().lower()
+        if flag in {"0", "false", "no", "off"}:
+            return False
+        return sys.stdout.isatty()
+
+    async def _drain_stream(
+        self,
+        stream: asyncio.StreamReader | None,
+        collector: list[str],
+        stream_live: bool,
+        *,
+        to_stderr: bool,
+    ) -> None:
+        if stream is None:
+            return
+
+        while True:
+            chunk = await stream.readline()
+            if not chunk:
+                break
+            text = chunk.decode("utf-8", errors="replace")
+            collector.append(text)
+            if stream_live:
+                target = sys.stderr if to_stderr else sys.stdout
+                target.write(text)
+                target.flush()
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
         """Best-effort safety guard for potentially destructive commands."""

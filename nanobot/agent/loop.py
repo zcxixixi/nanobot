@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -140,6 +142,124 @@ class AgentLoop:
         """Stop the agent loop."""
         self._running = False
         logger.info("Agent loop stopping")
+
+    def _extract_direct_exec_command(self, text: str) -> str | None:
+        """Extract explicit command requests from user message."""
+        content = text.strip()
+        if not content:
+            return None
+
+        lower = content.lower()
+        for prefix in ("!run ", "!exec "):
+            if lower.startswith(prefix):
+                command = content[len(prefix):].strip()
+                return command or None
+
+        fenced = re.search(
+            r"```(?:bash|shell|sh|zsh)?\s*\n(.*?)```",
+            content,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if fenced:
+            command = fenced.group(1).strip()
+            return command or None
+
+        explicit = (
+            "run exactly" in lower
+            or "execute exactly" in lower
+            or "use exec tool" in lower
+            or "执行：" in content
+            or "执行:" in content
+            or "运行：" in content
+            or "运行:" in content
+            or "调用 exec 工具" in content
+            or "必须调用 exec" in content
+        )
+        if not explicit:
+            return None
+
+        marker = re.compile(r"(run exactly|execute exactly|run|execute|执行|运行)\s*[:：]", re.IGNORECASE)
+        matches = list(marker.finditer(content))
+        if not matches:
+            return None
+
+        pieces: list[str] = []
+        for idx, match in enumerate(matches):
+            start = match.end()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(content)
+            part = content[start:end].strip()
+            if part:
+                pieces.append(part)
+
+        if not pieces:
+            return None
+
+        command = " && ".join(pieces)
+        command = re.sub(r"\s*then run\s*[:：]\s*", " && ", command, flags=re.IGNORECASE)
+        command = re.sub(r"\s*然后再?执行\s*[:：]\s*", " && ", command)
+        command = re.sub(r"\s*return raw[\s\S]*$", "", command, flags=re.IGNORECASE)
+        command = re.sub(r"\s*只返回[\s\S]*$", "", command)
+        command = re.sub(r"\s*不要解释[\s\S]*$", "", command)
+        command = re.sub(r"\s*&&\s*", " && ", command)
+        command = re.sub(r"\s{2,}", " ", command)
+        return command.strip().strip("`") or None
+
+    def _extract_nl_opencode_command(self, text: str) -> str | None:
+        """Map high-confidence natural-language opencode requests to exec command."""
+        content = text.strip()
+        if not content:
+            return None
+        lower = content.lower()
+        if "opencode" not in lower:
+            return None
+
+        help_like = (
+            "what is opencode",
+            "how to use opencode",
+            "什么是opencode",
+            "怎么用opencode",
+        )
+        if any(token in lower for token in help_like):
+            return None
+
+        # Accept common natural/typo variants to reduce user friction.
+        intent_tokens = (
+            "请", "帮我", "给我", "做", "写", "创建", "生成", "演示", "demo",
+            "please", "pls", "plz", "build", "create", "creat", "make", "write",
+            "can you", "could you", "use opencode to",
+        )
+        if not any(token in content or token in lower for token in intent_tokens):
+            return None
+
+        if "tetris" in lower or "俄罗斯方块" in content:
+            prompt = (
+                "Create a single-file Python Tetris game named tetris.py. "
+                "Use Python standard library curses only (no tkinter, no pygame). "
+                "Include movement, rotation, line clearing, scoring, increasing speed, "
+                "game over, and restart key."
+            )
+            return (
+                f"which opencode && opencode run {shlex.quote(prompt)}"
+                " && ls -la tetris.py"
+                " && python3 -m py_compile tetris.py"
+            )
+
+        if ("web demo" in lower or ("demo" in lower and "desktop" in lower)) and (
+            "python" in lower or "py" in lower
+        ):
+            prompt = (
+                "Create a short Python web demo named web_demo.py on Desktop "
+                "using standard library http.server only. Keep it concise and runnable."
+            )
+            return (
+                "which opencode"
+                " && cd ~/Desktop"
+                f" && opencode run {shlex.quote(prompt)}"
+                " && ls -la web_demo.py"
+                " && python3 -m py_compile web_demo.py"
+            )
+
+        return f"which opencode && opencode run {shlex.quote(content)}"
     
     async def _process_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
@@ -161,6 +281,29 @@ class AgentLoop:
         
         # Get or create session
         session = self.sessions.get_or_create(msg.session_key)
+
+        direct_command = self._extract_direct_exec_command(msg.content)
+        direct_exec_timeout: int | None = None
+        if not direct_command:
+            direct_command = self._extract_nl_opencode_command(msg.content)
+            if direct_command:
+                # opencode requests often exceed the default 60s; keep this scoped
+                # to high-confidence NL opencode routing only.
+                direct_exec_timeout = 300
+        if direct_command:
+            logger.info(f"Direct exec route: {direct_command[:200]}")
+            exec_params: dict[str, Any] = {"command": direct_command}
+            if direct_exec_timeout:
+                exec_params["timeout"] = direct_exec_timeout
+            result = await self.tools.execute("exec", exec_params)
+            session.add_message("user", msg.content)
+            session.add_message("assistant", result)
+            self.sessions.save(session)
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=result,
+            )
         
         # Update tool contexts
         message_tool = self.tools.get("message")

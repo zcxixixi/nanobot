@@ -2,6 +2,7 @@ from typing import Any
 
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.shell import ExecTool
 
 
 class SampleTool(Tool):
@@ -86,3 +87,23 @@ async def test_registry_returns_validation_error() -> None:
     reg.register(SampleTool())
     result = await reg.execute("sample", {"query": "hi"})
     assert "Invalid parameters" in result
+
+
+async def test_exec_tool_returns_stdout() -> None:
+    tool = ExecTool(timeout=5)
+    result = await tool.execute("printf 'hello'")
+    assert "hello" in result
+
+
+async def test_exec_tool_timeout_includes_partial_output() -> None:
+    tool = ExecTool(timeout=1)
+    result = await tool.execute("echo start && sleep 2")
+    assert "start" in result
+    assert "timed out" in result.lower()
+
+
+async def test_exec_tool_timeout_override() -> None:
+    tool = ExecTool(timeout=1)
+    result = await tool.execute("echo start && sleep 1", timeout=3)
+    assert "start" in result
+    assert "timed out" not in result.lower()
