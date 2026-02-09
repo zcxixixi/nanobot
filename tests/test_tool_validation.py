@@ -1,8 +1,11 @@
+import json
+from pathlib import Path
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
+from nanobot.config.loader import load_config
 
 
 class SampleTool(Tool):
@@ -107,3 +110,42 @@ async def test_exec_tool_timeout_override() -> None:
     result = await tool.execute("echo start && sleep 1", timeout=3)
     assert "start" in result
     assert "timed out" not in result.lower()
+
+
+def test_load_config_supports_nested_env_override(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": {"defaults": {"workspace": "~/.nanobot/workspace"}},
+                "tools": {"exec": {"timeout": 60}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    expected_workspace = tmp_path / "workspace_from_env"
+    monkeypatch.setenv("NANOBOT_AGENTS__DEFAULTS__WORKSPACE", str(expected_workspace))
+    monkeypatch.setenv("NANOBOT_TOOLS__EXEC__TIMEOUT", "123")
+
+    config = load_config(config_path=config_path)
+    assert config.workspace_path == expected_workspace.resolve()
+    assert config.tools.exec.timeout == 123
+
+
+def test_load_config_supports_env_api_key_override(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "openai": {"apiKey": ""},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("NANOBOT_PROVIDERS__OPENAI__API_KEY", "env-test-key")
+    config = load_config(config_path=config_path)
+    assert config.providers.openai.api_key == "env-test-key"
