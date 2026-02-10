@@ -4,6 +4,7 @@ import asyncio
 import atexit
 import os
 import signal
+import time
 from pathlib import Path
 import select
 import sys
@@ -158,10 +159,50 @@ def _is_exit_command(command: str) -> bool:
     return command.lower() in EXIT_COMMANDS
 
 
+def _read_pending_tty_text(max_total_ms: int = 40, idle_ms: int = 5) -> str:
+    """Read immediate pending pasted tail after input() returns."""
+    try:
+        fd = sys.stdin.fileno()
+        if not os.isatty(fd):
+            return ""
+    except Exception:
+        return ""
+
+    deadline = time.monotonic() + (max_total_ms / 1000.0)
+    chunks: list[bytes] = []
+    while time.monotonic() < deadline:
+        timeout = max(0.0, min(idle_ms / 1000.0, deadline - time.monotonic()))
+        try:
+            ready, _, _ = select.select([fd], [], [], timeout)
+        except Exception:
+            break
+        if not ready:
+            break
+        try:
+            data = os.read(fd, 4096)
+        except Exception:
+            break
+        if not data:
+            break
+        chunks.append(data)
+
+    if not chunks:
+        return ""
+
+    text = b"".join(chunks).decode("utf-8", errors="ignore")
+    return text.replace("\x1b[200~", "").replace("\x1b[201~", "").strip("\n")
+
+
 async def _read_interactive_input_async() -> str:
     """Read user input with arrow keys and history (runs input() in a thread)."""
     try:
-        return await asyncio.to_thread(input, _prompt_text())
+        first_line = await asyncio.to_thread(input, _prompt_text())
+        tail = _read_pending_tty_text()
+        if not tail:
+            return first_line
+        if first_line:
+            return f"{first_line}\n{tail}"
+        return tail
     except EOFError as exc:
         raise KeyboardInterrupt from exc
 
