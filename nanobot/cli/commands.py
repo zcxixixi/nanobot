@@ -1,11 +1,8 @@
 """CLI commands for nanobot."""
 
 import asyncio
-import atexit
 import os
-import re
 import signal
-import time
 from pathlib import Path
 import select
 import sys
@@ -16,6 +13,11 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.patch_stdout import patch_stdout
 
 from nanobot import __version__, __logo__
 
@@ -29,13 +31,10 @@ console = Console()
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
 
 # ---------------------------------------------------------------------------
-# Lightweight CLI input: readline for arrow keys / history, termios for flush
+# CLI input: prompt_toolkit for editing, paste, history, and display
 # ---------------------------------------------------------------------------
 
-_READLINE = None
-_HISTORY_FILE: Path | None = None
-_HISTORY_HOOK_REGISTERED = False
-_USING_LIBEDIT = False
+_PROMPT_SESSION: PromptSession | None = None
 _SAVED_TERM_ATTRS = None  # original termios settings, restored on exit
 
 
@@ -66,15 +65,6 @@ def _flush_pending_tty_input() -> None:
         return
 
 
-def _save_history() -> None:
-    if _READLINE is None or _HISTORY_FILE is None:
-        return
-    try:
-        _READLINE.write_history_file(str(_HISTORY_FILE))
-    except Exception:
-        return
-
-
 def _restore_terminal() -> None:
     """Restore terminal to its original state (echo, line buffering, etc.)."""
     if _SAVED_TERM_ATTRS is None:
@@ -86,11 +76,11 @@ def _restore_terminal() -> None:
         pass
 
 
-def _enable_line_editing() -> None:
-    """Enable readline for arrow keys, line editing, and persistent history."""
-    global _READLINE, _HISTORY_FILE, _HISTORY_HOOK_REGISTERED, _USING_LIBEDIT, _SAVED_TERM_ATTRS
+def _init_prompt_session() -> None:
+    """Create the prompt_toolkit session with persistent file history."""
+    global _PROMPT_SESSION, _SAVED_TERM_ATTRS
 
-    # Save terminal state before readline touches it
+    # Save terminal state so we can restore it on exit
     try:
         import termios
         _SAVED_TERM_ATTRS = termios.tcgetattr(sys.stdin.fileno())
@@ -99,68 +89,22 @@ def _enable_line_editing() -> None:
 
     history_file = Path.home() / ".nanobot" / "history" / "cli_history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
-    _HISTORY_FILE = history_file
 
-    try:
-        import readline
-    except ImportError:
-        return
-
-    _READLINE = readline
-    _USING_LIBEDIT = "libedit" in (readline.__doc__ or "").lower()
-
-    try:
-        if _USING_LIBEDIT:
-            readline.parse_and_bind("bind ^I rl_complete")
-            # Rebind arrows to native libedit history commands for cleaner redraw.
-            readline.parse_and_bind("bind ^[[A ed-prev-history")
-            readline.parse_and_bind("bind ^[[B ed-next-history")
-        else:
-            readline.parse_and_bind("tab: complete")
-            # Enable bracketed-paste so multiline paste is not split by newlines.
-            readline.parse_and_bind(r'"\e[200~": bracketed-paste-begin')
-        readline.parse_and_bind("set editing-mode emacs")
-    except Exception:
-        pass
-
-    # Note: bracketed-paste at the terminal level ('\x1b[?2004h') is NOT
-    # enabled for libedit — it partially consumes the escape, leaking '00~'
-    # into input().  GNU readline handles it natively via parse_and_bind.
-
-    try:
-        readline.read_history_file(str(history_file))
-    except Exception:
-        pass
-
-    if not _HISTORY_HOOK_REGISTERED:
-        atexit.register(_save_history)
-        _HISTORY_HOOK_REGISTERED = True
-
-
-def _prompt_text() -> str:
-    """Build a readline-friendly colored prompt."""
-    if _READLINE is None:
-        return "You: "
-    # libedit on macOS does not honor GNU readline non-printing markers.
-    if _USING_LIBEDIT:
-        return "\033[1;34mYou:\033[0m "
-    return "\001\033[1;34m\002You:\001\033[0m\002 "
+    _PROMPT_SESSION = PromptSession(
+        history=FileHistory(str(history_file)),
+        enable_open_in_editor=False,
+        multiline=False,   # Enter submits (single line mode)
+    )
 
 
 def _print_agent_response(response: str, render_markdown: bool) -> None:
-    """Render assistant response with consistent terminal styling."""
+    """Render assistant response with clean, copy-friendly header."""
     content = response or ""
     body = Markdown(content) if render_markdown else Text(content)
     console.print()
-    console.print(
-        Panel(
-            body,
-            title=f"{__logo__} nanobot",
-            title_align="left",
-            border_style="cyan",
-            padding=(0, 1),
-        )
-    )
+    # Use a simple header instead of a Panel box, making it easier to copy text
+    console.print(f"{__logo__} [bold cyan]nanobot[/bold cyan]")
+    console.print(body)
     console.print()
 
 
@@ -169,82 +113,24 @@ def _is_exit_command(command: str) -> bool:
     return command.lower() in EXIT_COMMANDS
 
 
-def _read_pending_tty_text(max_total_ms: int = 80, idle_ms: int = 5) -> str:
-    """Drain any pending bytes from stdin (e.g. paste continuation).
-
-    Returns *stripped*, newline-joined text.  Bracketed-paste escape markers
-    (``\x1b[200~``, ``\x1b[201~``) are removed automatically.
-    """
-    try:
-        fd = sys.stdin.fileno()
-        if not os.isatty(fd):
-            return ""
-    except Exception:
-        return ""
-
-    chunks: list[bytes] = []
-    t0 = time.monotonic()
-    while (time.monotonic() - t0) * 1000 < max_total_ms:
-        ready, _, _ = select.select([fd], [], [], idle_ms / 1000)
-        if not ready:
-            break
-        try:
-            data = os.read(fd, 4096)
-        except OSError:
-            break
-        if not data:
-            break
-        chunks.append(data)
-
-    if not chunks:
-        return ""
-
-    raw = b"".join(chunks).decode("utf-8", errors="replace")
-    # Strip bracketed-paste markers.
-    raw = raw.replace("\x1b[200~", "").replace("\x1b[201~", "")
-    return raw.strip()
-
-
-def _erase_previous_prompt_line() -> None:
-    """Move cursor up one line and clear it — removes duplicate readline prompt."""
-    try:
-        sys.stdout.write("\x1b[A\x1b[2K")
-        sys.stdout.flush()
-    except Exception:
-        pass
-
-
-_BRACKETED_PASTE_RE = re.compile(
-    r"\x1b\[200~|\x1b\[201~"  # full markers
-    r"|^00~"                    # libedit residue (\x1b[2 consumed as partial escape)
-    r"|~$"                      # trailing tilde from \x1b[201~
-)
-
-
-def _strip_bracketed_paste_residue(text: str) -> str:
-    """Remove bracketed-paste escape markers and partial libedit residue."""
-    return _BRACKETED_PASTE_RE.sub("", text)
-
-
 async def _read_interactive_input_async() -> str:
-    """Read user input with arrow keys and history (runs input() in a thread).
+    """Read user input using prompt_toolkit (handles paste, history, display).
 
-    After readline returns the first line, drains any remaining bytes from
-    stdin (e.g. from a multiline paste) and joins them.
+    prompt_toolkit natively handles:
+    - Multiline paste (bracketed paste mode)
+    - History navigation (up/down arrows)
+    - Clean display (no ghost characters or artifacts)
     """
+    if _PROMPT_SESSION is None:
+        raise RuntimeError("Call _init_prompt_session() first")
     try:
-        first_line = await asyncio.to_thread(input, _prompt_text())
-        first_line = _strip_bracketed_paste_residue(first_line)
-        # Use a wider collection window to capture full multiline paste bursts.
-        tail = _read_pending_tty_text(max_total_ms=500, idle_ms=20)
-        _erase_previous_prompt_line()  # remove stale readline prompt
-        if not tail:
-            return first_line
-        if first_line:
-            return f"{first_line}\n{tail}"
-        return tail
+        with patch_stdout():
+            return await _PROMPT_SESSION.prompt_async(
+                HTML("<b fg='ansiblue'>You:</b> "),
+            )
     except EOFError as exc:
         raise KeyboardInterrupt from exc
+
 
 
 def version_callback(value: bool):
@@ -563,13 +449,11 @@ def agent(
     
     # Show spinner when logs are off (no output to miss); skip when logs are on
     def _thinking_ctx():
-        # Always use a static message instead of an animated spinner.
-        # Rich's animated spinner uses ANSI cursor-up/down sequences that
-        # corrupt the terminal scroll buffer in interactive mode.
-        if not logs:
-            console.print("[dim]nanobot is thinking...[/dim]")
-        from contextlib import nullcontext
-        return nullcontext()
+        if logs:
+            from contextlib import nullcontext
+            return nullcontext()
+        # Animated spinner is safe to use with prompt_toolkit input handling
+        return console.status("[dim]nanobot is thinking...[/dim]", spinner="dots")
 
     if message:
         # Single message mode
@@ -581,13 +465,10 @@ def agent(
         asyncio.run(run_once())
     else:
         # Interactive mode
-        _enable_line_editing()
+        _init_prompt_session()
         console.print(f"{__logo__} Interactive mode (type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit)\n")
 
-        # input() runs in a worker thread that can't be cancelled.
-        # Without this handler, asyncio.run() would hang waiting for it.
         def _exit_on_sigint(signum, frame):
-            _save_history()
             _restore_terminal()
             console.print("\nGoodbye!")
             os._exit(0)
@@ -604,7 +485,6 @@ def agent(
                         continue
 
                     if _is_exit_command(command):
-                        _save_history()
                         _restore_terminal()
                         console.print("\nGoodbye!")
                         break
@@ -613,12 +493,10 @@ def agent(
                         response = await agent_loop.process_direct(user_input, session_id)
                     _print_agent_response(response, render_markdown=markdown)
                 except KeyboardInterrupt:
-                    _save_history()
                     _restore_terminal()
                     console.print("\nGoodbye!")
                     break
                 except EOFError:
-                    _save_history()
                     _restore_terminal()
                     console.print("\nGoodbye!")
                     break
