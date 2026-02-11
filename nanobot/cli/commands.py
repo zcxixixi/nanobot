@@ -17,6 +17,7 @@ from rich.text import Text
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 
 from nanobot import __version__, __logo__
@@ -90,10 +91,19 @@ def _init_prompt_session() -> None:
     history_file = Path.home() / ".nanobot" / "history" / "cli_history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
 
+    # Custom key bindings: Enter submits the buffer (single-line feel)
+    # but multiline=True allowing multi-line paste/input to be held in buffer.
+    kb = KeyBindings()
+
+    @kb.add("enter")
+    def _(event):
+        event.current_buffer.validate_and_handle()
+
     _PROMPT_SESSION = PromptSession(
         history=FileHistory(str(history_file)),
         enable_open_in_editor=False,
-        multiline=False,   # Enter submits (single line mode)
+        multiline=True,
+        key_bindings=kb,
     )
 
 
