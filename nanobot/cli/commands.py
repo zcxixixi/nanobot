@@ -3,7 +3,9 @@
 import asyncio
 import atexit
 import os
+import re
 import signal
+import time
 from pathlib import Path
 import select
 import sys
@@ -110,11 +112,20 @@ def _enable_line_editing() -> None:
     try:
         if _USING_LIBEDIT:
             readline.parse_and_bind("bind ^I rl_complete")
+            # Rebind arrows to native libedit history commands for cleaner redraw.
+            readline.parse_and_bind("bind ^[[A ed-prev-history")
+            readline.parse_and_bind("bind ^[[B ed-next-history")
         else:
             readline.parse_and_bind("tab: complete")
+            # Enable bracketed-paste so multiline paste is not split by newlines.
+            readline.parse_and_bind(r'"\e[200~": bracketed-paste-begin')
         readline.parse_and_bind("set editing-mode emacs")
     except Exception:
         pass
+
+    # Note: bracketed-paste at the terminal level ('\x1b[?2004h') is NOT
+    # enabled for libedit — it partially consumes the escape, leaking '00~'
+    # into input().  GNU readline handles it natively via parse_and_bind.
 
     try:
         readline.read_history_file(str(history_file))
@@ -158,10 +169,80 @@ def _is_exit_command(command: str) -> bool:
     return command.lower() in EXIT_COMMANDS
 
 
-async def _read_interactive_input_async() -> str:
-    """Read user input with arrow keys and history (runs input() in a thread)."""
+def _read_pending_tty_text(max_total_ms: int = 80, idle_ms: int = 5) -> str:
+    """Drain any pending bytes from stdin (e.g. paste continuation).
+
+    Returns *stripped*, newline-joined text.  Bracketed-paste escape markers
+    (``\x1b[200~``, ``\x1b[201~``) are removed automatically.
+    """
     try:
-        return await asyncio.to_thread(input, _prompt_text())
+        fd = sys.stdin.fileno()
+        if not os.isatty(fd):
+            return ""
+    except Exception:
+        return ""
+
+    chunks: list[bytes] = []
+    t0 = time.monotonic()
+    while (time.monotonic() - t0) * 1000 < max_total_ms:
+        ready, _, _ = select.select([fd], [], [], idle_ms / 1000)
+        if not ready:
+            break
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+        chunks.append(data)
+
+    if not chunks:
+        return ""
+
+    raw = b"".join(chunks).decode("utf-8", errors="replace")
+    # Strip bracketed-paste markers.
+    raw = raw.replace("\x1b[200~", "").replace("\x1b[201~", "")
+    return raw.strip()
+
+
+def _erase_previous_prompt_line() -> None:
+    """Move cursor up one line and clear it — removes duplicate readline prompt."""
+    try:
+        sys.stdout.write("\x1b[A\x1b[2K")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
+_BRACKETED_PASTE_RE = re.compile(
+    r"\x1b\[200~|\x1b\[201~"  # full markers
+    r"|^00~"                    # libedit residue (\x1b[2 consumed as partial escape)
+    r"|~$"                      # trailing tilde from \x1b[201~
+)
+
+
+def _strip_bracketed_paste_residue(text: str) -> str:
+    """Remove bracketed-paste escape markers and partial libedit residue."""
+    return _BRACKETED_PASTE_RE.sub("", text)
+
+
+async def _read_interactive_input_async() -> str:
+    """Read user input with arrow keys and history (runs input() in a thread).
+
+    After readline returns the first line, drains any remaining bytes from
+    stdin (e.g. from a multiline paste) and joins them.
+    """
+    try:
+        first_line = await asyncio.to_thread(input, _prompt_text())
+        first_line = _strip_bracketed_paste_residue(first_line)
+        # Use a wider collection window to capture full multiline paste bursts.
+        tail = _read_pending_tty_text(max_total_ms=500, idle_ms=20)
+        _erase_previous_prompt_line()  # remove stale readline prompt
+        if not tail:
+            return first_line
+        if first_line:
+            return f"{first_line}\n{tail}"
+        return tail
     except EOFError as exc:
         raise KeyboardInterrupt from exc
 
@@ -482,10 +563,13 @@ def agent(
     
     # Show spinner when logs are off (no output to miss); skip when logs are on
     def _thinking_ctx():
-        if logs:
-            from contextlib import nullcontext
-            return nullcontext()
-        return console.status("[dim]nanobot is thinking...[/dim]", spinner="dots")
+        # Always use a static message instead of an animated spinner.
+        # Rich's animated spinner uses ANSI cursor-up/down sequences that
+        # corrupt the terminal scroll buffer in interactive mode.
+        if not logs:
+            console.print("[dim]nanobot is thinking...[/dim]")
+        from contextlib import nullcontext
+        return nullcontext()
 
     if message:
         # Single message mode
