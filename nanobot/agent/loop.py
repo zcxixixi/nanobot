@@ -177,17 +177,6 @@ class AgentLoop:
         )
         return any(token in lower or token in content for token in must_exec_tokens)
 
-    def _looks_like_deflection_reply(self, content: str) -> bool:
-        """Detect replies that shift execution to user instead of doing it."""
-        lower = (content or "").lower()
-        deflection_tokens = (
-            "you run", "run this command", "run it in your terminal",
-            "copy and run", "please run", "manual", "manually",
-            "你运行", "你先运行", "你自己运行", "自己运行", "请在终端运行", "你手动", "手动执行",
-            "把输出贴给我", "paste the output",
-        )
-        return any(token in lower or token in content for token in deflection_tokens)
-
     def _is_folder_organize_request(self, content: str) -> bool:
         """Detect natural-language requests for organizing a folder."""
         lower = content.lower()
@@ -488,7 +477,6 @@ PY"""
         iteration = 0
         final_content = None
         tool_call_count = 0
-        forced_retry_used = False
         
         while iteration < self.max_iterations:
             iteration += 1
@@ -529,33 +517,6 @@ PY"""
                         messages, tool_call.id, tool_call.name, result
                     )
             else:
-                should_force_retry = (
-                    prefer_tools
-                    and tool_call_count == 0
-                    and not forced_retry_used
-                    and self._looks_like_deflection_reply(response.content)
-                )
-                if should_force_retry:
-                    forced_retry_used = True
-                    messages = self.context.add_assistant_message(
-                        messages, response.content,
-                        reasoning_content=response.reasoning_content,
-                    )
-                    retry_prompt = (
-                        "Must-execute fallback: call at least one relevant tool now "
-                        "and provide execution evidence (status, output path(s), "
-                        "validation command and result)."
-                        if require_tools
-                        else
-                        "If completing this task needs execution, call tools now. "
-                        "Otherwise provide the finished deliverable directly."
-                    )
-                    messages.append({
-                        "role": "user",
-                        "content": retry_prompt,
-                    })
-                    logger.info("Proactive fallback: forcing one must-exec retry")
-                    continue
                 # No tool calls, we're done
                 final_content = response.content
                 break
@@ -568,7 +529,7 @@ PY"""
             final_content = (
                 "Status: fail\n"
                 "Reason: task appears to require real execution, but no tool was called.\n"
-                "Next action: retry accepted; will execute tool calls and return verifiable output.\n"
+                "Next action: ask the agent to execute tools directly and return verifiable output.\n"
                 f"Last model reply: {last}"
             )
         
