@@ -878,5 +878,44 @@ def status():
                 console.print(f"{spec.label}: {'[green]✓[/green]' if has_key else '[dim]not set[/dim]'}")
 
 
+# ============================================================================
+# OAuth Login
+# ============================================================================
+
+
+@app.command()
+def login(
+    provider: str = typer.Argument(..., help="OAuth provider to authenticate with (e.g., 'openai-codex')"),
+):
+    """Authenticate with an OAuth provider."""
+    console.print(f"{__logo__} OAuth Login - {provider}\n")
+    
+    if provider == "openai-codex":
+        try:
+            from oauth_cli_kit import get_token as get_codex_token
+            
+            console.print("[cyan]Starting OpenAI Codex authentication...[/cyan]")
+            console.print("A browser window will open for you to authenticate.\n")
+            
+            token = get_codex_token()
+            
+            if token and token.access:
+                console.print(f"[green]✓ Successfully authenticated with OpenAI Codex![/green]")
+                console.print(f"[dim]Account ID: {token.account_id}[/dim]")
+            else:
+                console.print("[red]✗ Authentication failed[/red]")
+                raise typer.Exit(1)
+        except ImportError:
+            console.print("[red]oauth_cli_kit not installed. Run: pip install oauth-cli-kit[/red]")
+            raise typer.Exit(1)
+        except Exception as e:
+            console.print(f"[red]Authentication error: {e}[/red]")
+            raise typer.Exit(1)
+    else:
+        console.print(f"[red]Unknown OAuth provider: {provider}[/red]")
+        console.print("[yellow]Supported providers: openai-codex[/yellow]")
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()
