@@ -127,25 +127,9 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         model_overrides=(),
     ),
 
-    # OpenAI: LiteLLM recognizes "gpt-*" natively, no prefix needed.
-    ProviderSpec(
-        name="openai",
-        keywords=("openai", "gpt"),
-        env_key="OPENAI_API_KEY",
-        display_name="OpenAI",
-        litellm_prefix="",
-        skip_prefixes=(),
-        env_extras=(),
-        is_gateway=False,
-        is_local=False,
-        detect_by_key_prefix="",
-        detect_by_base_keyword="",
-        default_api_base="",
-        strip_model_prefix=False,
-        model_overrides=(),
-    ),
-
     # OpenAI Codex: uses OAuth, not API key.
+    # MUST appear before standard OpenAI — "openai-codex/gpt-5.3-codex"
+    # contains "openai" and "gpt", so OpenAI would match first otherwise.
     ProviderSpec(
         name="openai_codex",
         keywords=("openai-codex", "codex"),
@@ -163,6 +147,24 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         model_overrides=(),
         is_oauth=True,                      # OAuth-based authentication
         oauth_provider="openai-codex",      # OAuth provider identifier
+    ),
+
+    # OpenAI: LiteLLM recognizes "gpt-*" natively, no prefix needed.
+    ProviderSpec(
+        name="openai",
+        keywords=("openai", "gpt"),
+        env_key="OPENAI_API_KEY",
+        display_name="OpenAI",
+        litellm_prefix="",
+        skip_prefixes=(),
+        env_extras=(),
+        is_gateway=False,
+        is_local=False,
+        detect_by_key_prefix="",
+        detect_by_base_keyword="",
+        default_api_base="",
+        strip_model_prefix=False,
+        model_overrides=(),
     ),
 
     # DeepSeek: needs "deepseek/" prefix for LiteLLM routing.
