@@ -140,6 +140,29 @@ class AgentLoop:
         """Stop the agent loop."""
         self._running = False
         logger.info("Agent loop stopping")
+
+    def _should_prefer_tools(self, content: str) -> bool:
+        """Best-effort intent check for requests that should execute tools."""
+        lower = content.lower()
+        action_tokens = (
+            "fix", "edit", "change", "update", "write", "create", "generate",
+            "run", "execute", "check", "test", "search", "find", "list",
+            "build", "compile", "install", "debug", "patch",
+            "修", "改", "修改", "更新", "写", "创建", "生成", "执行", "运行", "检查", "测试", "搜索", "查找",
+            "列出", "安装", "编译", "构建", "调试", "补丁",
+        )
+        return any(token in lower or token in content for token in action_tokens)
+
+    def _build_execution_plan_text(self, content: str) -> str:
+        """Create a lightweight internal plan without changing architecture."""
+        return (
+            "Execution plan:\n"
+            "1) Understand target and scope from the user request.\n"
+            "2) Execute the task by calling appropriate tools directly.\n"
+            "3) Validate with a concrete check (tests/compile/run/list).\n"
+            "4) Return status, output path(s), and validation result.\n"
+            f"User request: {content}"
+        )
     
     async def _process_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
@@ -183,10 +206,24 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
         )
+
+        prefer_tools = self._should_prefer_tools(msg.content)
+        if prefer_tools:
+            plan_text = self._build_execution_plan_text(msg.content)
+            messages.append({"role": "user", "content": plan_text})
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Execute this task now. Prefer tool calls over advice-only replies. "
+                    "Do not ask the user to run commands when tools can do it."
+                ),
+            })
         
         # Agent loop
         iteration = 0
         final_content = None
+        tool_call_count = 0
+        forced_retry_used = False
         
         while iteration < self.max_iterations:
             iteration += 1
@@ -200,6 +237,7 @@ class AgentLoop:
             
             # Handle tool calls
             if response.has_tool_calls:
+                tool_call_count += len(response.tool_calls)
                 # Add assistant message with tool calls
                 tool_call_dicts = [
                     {
@@ -226,12 +264,37 @@ class AgentLoop:
                         messages, tool_call.id, tool_call.name, result
                     )
             else:
+                if prefer_tools and tool_call_count == 0 and not forced_retry_used:
+                    forced_retry_used = True
+                    messages = self.context.add_assistant_message(
+                        messages, response.content,
+                        reasoning_content=response.reasoning_content,
+                    )
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Must-execute fallback: call at least one relevant tool now "
+                            "and provide execution evidence (status, output path(s), "
+                            "validation command and result)."
+                        ),
+                    })
+                    logger.info("Proactive fallback: forcing one must-exec retry")
+                    continue
                 # No tool calls, we're done
                 final_content = response.content
                 break
         
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
+
+        if prefer_tools and tool_call_count == 0:
+            last = final_content or "(empty)"
+            final_content = (
+                "Status: fail\n"
+                "Reason: executable request finished without any tool execution.\n"
+                "Next action: retry accepted; will execute tool calls and return verifiable output.\n"
+                f"Last model reply: {last}"
+            )
         
         # Log response preview
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
