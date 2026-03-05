@@ -17,6 +17,7 @@ The skill format and metadata structure follow OpenClaw's conventions to maintai
 
 | Skill | Description |
 |-------|-------------|
+| `asset-manager` | Manage holdings in `Asset-Management/assets.xlsx` (view, upsert, remove) |
 | `github` | Interact with GitHub using the `gh` CLI |
 | `weather` | Get weather info using wttr.in and Open-Meteo |
 | `summarize` | Summarize URLs, files, and YouTube videos |
