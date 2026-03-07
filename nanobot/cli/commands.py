@@ -1,6 +1,7 @@
 """CLI commands for nanobot."""
 
 import asyncio
+import json
 import os
 import select
 import signal
@@ -9,7 +10,6 @@ from pathlib import Path
 
 # Force UTF-8 encoding for Windows console
 if sys.platform == "win32":
-    import locale
     if sys.stdout.encoding != "utf-8":
         os.environ["PYTHONIOENCODING"] = "utf-8"
         # Re-open stdout/stderr with UTF-8 encoding
@@ -212,8 +212,8 @@ def onboard():
 
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
-    from nanobot.providers.openai_codex_provider import OpenAICodexProvider
     from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
+    from nanobot.providers.openai_codex_provider import OpenAICodexProvider
 
     model = config.agents.defaults.model
     provider_name = config.get_provider_name(model)
@@ -239,7 +239,7 @@ def _make_provider(config: Config):
             console.print("Set them in ~/.nanobot/config.json under providers.azure_openai section")
             console.print("Use the model field to specify the deployment name.")
             raise typer.Exit(1)
-        
+
         return AzureOpenAIProvider(
             api_key=p.api_key,
             api_base=p.api_base,
@@ -637,6 +637,106 @@ def agent(
                 await agent_loop.close_mcp()
 
         asyncio.run(run_interactive())
+
+
+@app.command("debug-context")
+def debug_context(
+    session_id: str = typer.Option("cli:direct", "--session-id", "-s", help="Session ID to inspect"),
+    max_messages: int = typer.Option(40, "--max-messages", help="Max session messages to inspect"),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON snapshot"),
+):
+    """Show the current context inputs and pruned history for a session."""
+    from nanobot.agent.diagnostics import build_context_debug_snapshot
+    from nanobot.config.loader import load_config
+
+    config = load_config()
+    snapshot = build_context_debug_snapshot(
+        config.workspace_path,
+        session_key=session_id,
+        max_messages=max_messages,
+    )
+
+    if json_output:
+        console.print_json(json.dumps(snapshot, ensure_ascii=False))
+        return
+
+    console.print(f"{__logo__} Debug Context\n")
+    console.print(f"Workspace: [cyan]{snapshot['workspace']}[/cyan]")
+    console.print(f"Session: [cyan]{snapshot['session_key']}[/cyan]")
+    console.print(f"System prompt chars: [cyan]{snapshot['prompt']['characters']}[/cyan]\n")
+
+    files_table = Table(title="Injected Files")
+    files_table.add_column("File", style="cyan")
+    files_table.add_column("Exists", style="green")
+    files_table.add_column("Preview", style="yellow")
+    files_table.add_row("PINNED.md", "yes" if snapshot["files"]["pinned_exists"] else "no", snapshot["pinned_preview"] or "(empty)")
+    files_table.add_row("WORKFLOW.md", "yes" if snapshot["files"]["workflow_exists"] else "no", snapshot["workflow_preview"] or "(empty)")
+    files_table.add_row("MEMORY.md", "yes" if snapshot["files"]["memory_exists"] else "no", snapshot["memory_preview"] or "(empty)")
+    console.print(files_table)
+
+    history_table = Table(title="History Summary")
+    history_table.add_column("Messages", style="cyan")
+    history_table.add_column("Tool Messages", style="cyan")
+    history_table.add_column("Pruned Tool Messages", style="yellow")
+    history_table.add_column("Recent Detailed Tool Messages", style="green")
+    history_table.add_row(
+        str(snapshot["history"]["message_count"]),
+        str(snapshot["history"]["tool_messages"]),
+        str(snapshot["history"]["pruned_tool_messages"]),
+        str(snapshot["history"]["recent_detailed_tool_messages"]),
+    )
+    console.print(history_table)
+
+    message_table = Table(title="Recent History Preview")
+    message_table.add_column("Role", style="cyan")
+    message_table.add_column("Name", style="magenta")
+    message_table.add_column("Preview", style="white")
+    for msg in snapshot["history"]["messages"]:
+        message_table.add_row(msg["role"] or "", msg.get("name") or "", msg["content_preview"])
+    console.print(message_table)
+
+
+@app.command("benchmark-context")
+def benchmark_context(
+    turns: int = typer.Option(8, "--turns", help="Number of synthetic turns to run"),
+    block_count: int = typer.Option(300, "--block-count", help="Size of synthetic tool output"),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON result"),
+):
+    """Run a short synthetic benchmark for long-workflow context retention."""
+    from loguru import logger
+
+    from nanobot.agent.diagnostics import run_synthetic_context_benchmark
+
+    logger.disable("nanobot")
+    try:
+        result = run_synthetic_context_benchmark(turns=turns, block_count=block_count)
+    finally:
+        logger.enable("nanobot")
+
+    if json_output:
+        console.print_json(json.dumps(result, ensure_ascii=False))
+        if not result["passed"]:
+            raise typer.Exit(1)
+        return
+
+    console.print(f"{__logo__} Context Benchmark\n")
+    console.print(f"Passed: [{'green' if result['passed'] else 'red'}]{result['passed']}[/]")
+    console.print(f"Completed turns: [cyan]{result['completed_turns']}[/cyan]")
+    console.print(f"Provider calls: [cyan]{result['provider_calls']}[/cyan]")
+    console.print(
+        "Prompt checks: "
+        f"pinned={result['prompt_checks']['pinned_injected']} "
+        f"workflow={result['prompt_checks']['workflow_injected']}"
+    )
+    console.print(
+        "History: "
+        f"tool_messages={result['history']['tool_messages']} "
+        f"pruned={result['history']['pruned_tool_messages']} "
+        f"recent_detailed={result['history']['recent_detailed_tool_messages']}"
+    )
+    console.print(f"First tool preview: {result['history']['first_tool_preview']}")
+    if not result["passed"]:
+        raise typer.Exit(1)
 
 
 # ============================================================================
