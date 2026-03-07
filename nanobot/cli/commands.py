@@ -665,6 +665,18 @@ def debug_context(
     console.print(f"Session: [cyan]{snapshot['session_key']}[/cyan]")
     console.print(f"System prompt chars: [cyan]{snapshot['prompt']['characters']}[/cyan]\n")
 
+    console.print("[bold]What This Means[/bold]")
+    console.print(
+        f"- Rules are visible: [cyan]{snapshot['readable_summary']['rules_visible']}[/cyan]"
+    )
+    console.print(
+        f"- Workflow status is visible: [cyan]{snapshot['readable_summary']['workflow_visible']}[/cyan]"
+    )
+    console.print(
+        f"- Older history was trimmed: [cyan]{snapshot['readable_summary']['older_history_trimmed']}[/cyan]"
+    )
+    console.print(snapshot["readable_summary"]["explanation"] + "\n")
+
     files_table = Table(title="Injected Files")
     files_table.add_column("File", style="cyan")
     files_table.add_column("Exists", style="green")
@@ -698,7 +710,7 @@ def debug_context(
 
 @app.command("benchmark-context")
 def benchmark_context(
-    turns: int = typer.Option(8, "--turns", help="Number of synthetic turns to run"),
+    turns: int = typer.Option(20, "--turns", help="Number of synthetic turns to run"),
     block_count: int = typer.Option(300, "--block-count", help="Size of synthetic tool output"),
     json_output: bool = typer.Option(False, "--json", help="Print JSON result"),
 ):
@@ -720,9 +732,21 @@ def benchmark_context(
         return
 
     console.print(f"{__logo__} Context Benchmark\n")
+    console.print(f"[bold]{result['requested_turns']}-turn medium-pressure benchmark[/bold]\n")
     console.print(f"Passed: [{'green' if result['passed'] else 'red'}]{result['passed']}[/]")
     console.print(f"Completed turns: [cyan]{result['completed_turns']}[/cyan]")
     console.print(f"Provider calls: [cyan]{result['provider_calls']}[/cyan]")
+    console.print("[bold]What This Means[/bold]")
+    console.print(
+        f"- Rules stayed visible: [cyan]{result['readable_summary']['rules_visible']}[/cyan]"
+    )
+    console.print(
+        f"- Workflow stayed visible: [cyan]{result['readable_summary']['workflow_visible']}[/cyan]"
+    )
+    console.print(
+        f"- Older tool output was trimmed: [cyan]{result['readable_summary']['older_history_trimmed']}[/cyan]"
+    )
+    console.print(result["readable_summary"]["explanation"])
     console.print(
         "Prompt checks: "
         f"pinned={result['prompt_checks']['pinned_injected']} "

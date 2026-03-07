@@ -39,6 +39,46 @@ def _preview_content(content: Any, limit: int = 140) -> str:
     return _preview_text(str(content), limit=limit)
 
 
+def _build_readable_summary(
+    *,
+    pinned_exists: bool,
+    workflow_exists: bool,
+    tool_messages: int,
+    pruned_tool_messages: int,
+    recent_detailed_tool_messages: int,
+) -> dict[str, Any]:
+    """Produce a plain-language summary for non-technical readers."""
+    rules_visible = pinned_exists
+    workflow_visible = workflow_exists
+    older_history_trimmed = pruned_tool_messages > 0
+    explanation_parts = []
+
+    explanation_parts.append(
+        "Rules are visible to the agent." if rules_visible
+        else "Rules are not visible because PINNED.md is missing."
+    )
+    explanation_parts.append(
+        "Workflow status is visible to the agent." if workflow_visible
+        else "Workflow status is not visible because WORKFLOW.md is missing."
+    )
+    if tool_messages == 0:
+        explanation_parts.append("No tool output is stored in this session yet.")
+    elif older_history_trimmed:
+        explanation_parts.append(
+            f"Older tool output was trimmed ({pruned_tool_messages} older tool messages compressed) "
+            f"while {recent_detailed_tool_messages} recent tool messages stayed detailed."
+        )
+    else:
+        explanation_parts.append("Tool output has not needed trimming yet.")
+
+    return {
+        "rules_visible": rules_visible,
+        "workflow_visible": workflow_visible,
+        "older_history_trimmed": older_history_trimmed,
+        "explanation": " ".join(explanation_parts),
+    }
+
+
 def build_context_debug_snapshot(
     workspace: Path,
     *,
@@ -62,6 +102,7 @@ def build_context_debug_snapshot(
         if isinstance(m.get("content"), str)
         and m["content"].startswith("[older tool result pruned:")
     ]
+    recent_detailed_tool_messages = len(tool_messages) - len(pruned_tool_messages)
 
     return {
         "workspace": str(workspace),
@@ -75,6 +116,13 @@ def build_context_debug_snapshot(
             "workflow_exists": workflow_path.exists(),
             "memory_exists": memory_path.exists(),
         },
+        "readable_summary": _build_readable_summary(
+            pinned_exists=pinned_path.exists(),
+            workflow_exists=workflow_path.exists(),
+            tool_messages=len(tool_messages),
+            pruned_tool_messages=len(pruned_tool_messages),
+            recent_detailed_tool_messages=recent_detailed_tool_messages,
+        ),
         "pinned_preview": _preview_text(_read_optional(pinned_path)),
         "workflow_preview": _preview_text(_read_optional(workflow_path)),
         "memory_preview": _preview_text(_read_optional(memory_path)),
@@ -82,7 +130,7 @@ def build_context_debug_snapshot(
             "message_count": len(history),
             "tool_messages": len(tool_messages),
             "pruned_tool_messages": len(pruned_tool_messages),
-            "recent_detailed_tool_messages": len(tool_messages) - len(pruned_tool_messages),
+            "recent_detailed_tool_messages": recent_detailed_tool_messages,
             "messages": [
                 {
                     "role": msg.get("role"),
@@ -191,14 +239,27 @@ async def _run_synthetic_context_benchmark_async(
             and snapshot["history"]["pruned_tool_messages"] > 0
             and snapshot["history"]["recent_detailed_tool_messages"] == min(2, turns)
         )
+        readable_summary = {
+            "rules_visible": pinned_injected,
+            "workflow_visible": workflow_injected,
+            "older_history_trimmed": snapshot["history"]["pruned_tool_messages"] > 0,
+            "explanation": (
+                f"This {turns}-turn medium-pressure benchmark checks whether rules and workflow state stay visible "
+                f"while older tool output gets trimmed. "
+                f"Rules stayed visible={pinned_injected}, workflow stayed visible={workflow_injected}, "
+                f"older tool output was trimmed={snapshot['history']['pruned_tool_messages'] > 0}."
+            ),
+        }
         return {
             "passed": passed,
+            "requested_turns": turns,
             "completed_turns": completed_turns,
             "provider_calls": provider.calls,
             "prompt_checks": {
                 "pinned_injected": pinned_injected,
                 "workflow_injected": workflow_injected,
             },
+            "readable_summary": readable_summary,
             "history": {
                 "message_count": snapshot["history"]["message_count"],
                 "tool_messages": snapshot["history"]["tool_messages"],
@@ -218,7 +279,7 @@ async def _run_synthetic_context_benchmark_async(
 
 def run_synthetic_context_benchmark(
     *,
-    turns: int = 8,
+    turns: int = 20,
     block_count: int = 300,
 ) -> dict[str, Any]:
     """Run a deterministic short benchmark for long-workflow context retention."""

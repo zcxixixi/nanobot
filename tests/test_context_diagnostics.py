@@ -66,6 +66,17 @@ def test_run_synthetic_context_benchmark_returns_pass_summary() -> None:
     assert result["prompt_checks"]["workflow_injected"] is True
     assert result["history"]["pruned_tool_messages"] > 0
     assert result["history"]["recent_detailed_tool_messages"] == 2
+    assert result["readable_summary"]["rules_visible"] is True
+    assert result["readable_summary"]["workflow_visible"] is True
+    assert result["readable_summary"]["older_history_trimmed"] is True
+
+
+def test_run_synthetic_context_benchmark_defaults_to_medium_pressure() -> None:
+    result = run_synthetic_context_benchmark()
+
+    assert result["requested_turns"] == 20
+    assert result["completed_turns"] == 20
+    assert result["passed"] is True
 
 
 def test_debug_context_command_outputs_json(tmp_path: Path) -> None:
@@ -96,6 +107,7 @@ def test_debug_context_command_outputs_json(tmp_path: Path) -> None:
     assert payload["session_key"] == "cli:test"
     assert payload["history"]["message_count"] == 2
     assert "Stay concise." in payload["pinned_preview"]
+    assert payload["readable_summary"]["rules_visible"] is True
 
 
 def test_benchmark_context_command_outputs_json() -> None:
@@ -105,3 +117,35 @@ def test_benchmark_context_command_outputs_json() -> None:
     payload = json.loads(result.stdout)
     assert payload["passed"] is True
     assert payload["completed_turns"] == 4
+
+
+def test_debug_context_command_plain_output_is_human_readable(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    (workspace / "memory" / "PINNED.md").write_text(
+        "# Pinned Context\n- Explain constraints clearly.\n",
+        encoding="utf-8",
+    )
+    (workspace / "WORKFLOW.md").write_text(
+        "# Workflow\nCurrent step: explain the current state.\nNext step: explain what to do next.\n",
+        encoding="utf-8",
+    )
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+
+    with patch("nanobot.config.loader.load_config", return_value=config):
+        result = runner.invoke(app, ["debug-context"])
+
+    assert result.exit_code == 0
+    assert "What This Means" in result.stdout
+    assert "Rules are visible" in result.stdout
+    assert "Workflow status is visible" in result.stdout
+
+
+def test_benchmark_context_command_plain_output_mentions_medium_pressure() -> None:
+    result = runner.invoke(app, ["benchmark-context"])
+
+    assert result.exit_code == 0
+    assert "20-turn medium-pressure benchmark" in result.stdout
+    assert "Rules stayed visible" in result.stdout
+    assert "Older tool output was trimmed" in result.stdout
