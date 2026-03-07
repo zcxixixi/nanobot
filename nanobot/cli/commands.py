@@ -19,6 +19,7 @@ from rich.text import Text
 
 from nanobot import __logo__, __version__
 from nanobot.config.schema import Config
+from nanobot.providers.factory import make_provider
 from nanobot.utils.helpers import sync_workspace_templates
 
 app = typer.Typer(
@@ -203,40 +204,10 @@ def onboard():
 
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
-    from nanobot.providers.custom_provider import CustomProvider
-    from nanobot.providers.litellm_provider import LiteLLMProvider
-    from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-
-    model = config.agents.defaults.model
-    provider_name = config.get_provider_name(model)
-    p = config.get_provider(model)
-
-    # OpenAI Codex (OAuth)
-    if provider_name == "openai_codex" or model.startswith("openai-codex/"):
-        return OpenAICodexProvider(default_model=model)
-
-    # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
-    if provider_name == "custom":
-        return CustomProvider(
-            api_key=p.api_key if p else "no-key",
-            api_base=config.get_api_base(model) or "http://localhost:8000/v1",
-            default_model=model,
-        )
-
-    from nanobot.providers.registry import find_by_name
-    spec = find_by_name(provider_name)
-    if not model.startswith("bedrock/") and not (p and p.api_key) and not (spec and spec.is_oauth):
-        console.print("[red]Error: No API key configured.[/red]")
-        console.print("Set one in ~/.nanobot/config.json under providers section")
-        raise typer.Exit(1)
-
-    return LiteLLMProvider(
-        api_key=p.api_key if p else None,
-        api_base=config.get_api_base(model),
-        default_model=model,
-        extra_headers=p.extra_headers if p else None,
-        provider_name=provider_name,
-    )
+    try:
+        return make_provider(config)
+    except SystemExit as exc:
+        raise typer.Exit(int(exc.code) if exc.code is not None else 1) from exc
 
 
 # ============================================================================
@@ -299,31 +270,13 @@ def gateway(
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
+        from nanobot.cron.runtime import execute_cron_job
         from nanobot.agent.tools.message import MessageTool
-        reminder_note = (
-            "[Scheduled Task] Timer finished.\n\n"
-            f"Task '{job.name}' has been triggered.\n"
-            f"Scheduled instruction: {job.payload.message}"
-        )
-
-        response = await agent.process_direct(
-            reminder_note,
-            session_key=f"cron:{job.id}",
-            channel=job.payload.channel or "cli",
-            chat_id=job.payload.to or "direct",
-        )
+        response = await execute_cron_job(job, agent=agent, bus=bus)
 
         message_tool = agent.tools.get("message")
-        if isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
+        if job.payload.kind == "agent_turn" and isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
             return response
-
-        if job.payload.deliver and job.payload.to and response:
-            from nanobot.bus.events import OutboundMessage
-            await bus.publish_outbound(OutboundMessage(
-                channel=job.payload.channel or "cli",
-                chat_id=job.payload.to,
-                content=response
-            ))
         return response
     cron.on_job = on_cron_job
 
@@ -893,7 +846,11 @@ def cron_list(
 @cron_app.command("add")
 def cron_add(
     name: str = typer.Option(..., "--name", "-n", help="Job name"),
-    message: str = typer.Option(..., "--message", "-m", help="Message for agent"),
+    message: str | None = typer.Option(None, "--message", "-m", help="Message for agent"),
+    command: list[str] = typer.Option(None, "--command", help="Direct command argv item; repeat for each argument"),
+    cwd: str | None = typer.Option(None, "--cwd", help="Working directory for direct command jobs"),
+    env: list[str] = typer.Option(None, "--env", help="Environment override as KEY=VALUE; repeatable"),
+    timeout_s: int | None = typer.Option(None, "--timeout", help="Timeout in seconds for direct command jobs"),
     every: int = typer.Option(None, "--every", "-e", help="Run every N seconds"),
     cron_expr: str = typer.Option(None, "--cron", "-c", help="Cron expression (e.g. '0 9 * * *')"),
     tz: str | None = typer.Option(None, "--tz", help="IANA timezone for cron (e.g. 'America/Vancouver')"),
@@ -909,6 +866,9 @@ def cron_add(
 
     if tz and not cron_expr:
         console.print("[red]Error: --tz can only be used with --cron[/red]")
+        raise typer.Exit(1)
+    if bool(message) == bool(command):
+        console.print("[red]Error: specify exactly one of --message or --command[/red]")
         raise typer.Exit(1)
 
     # Determine schedule type
@@ -928,14 +888,33 @@ def cron_add(
     service = CronService(store_path)
 
     try:
-        job = service.add_job(
-            name=name,
-            schedule=schedule,
-            message=message,
-            deliver=deliver,
-            to=to,
-            channel=channel,
-        )
+        if command:
+            env_map: dict[str, str] = {}
+            for item in env or []:
+                if "=" not in item:
+                    raise ValueError(f"invalid env override '{item}', expected KEY=VALUE")
+                key, value = item.split("=", 1)
+                env_map[key] = value
+            job = service.add_command_job(
+                name=name,
+                schedule=schedule,
+                argv=command,
+                cwd=cwd,
+                env=env_map,
+                timeout_s=timeout_s,
+                deliver=deliver,
+                to=to,
+                channel=channel,
+            )
+        else:
+            job = service.add_job(
+                name=name,
+                schedule=schedule,
+                message=message or "",
+                deliver=deliver,
+                to=to,
+                channel=channel,
+            )
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1) from e
@@ -1022,12 +1001,9 @@ def cron_run(
     result_holder = []
 
     async def on_job(job: CronJob) -> str | None:
-        response = await agent_loop.process_direct(
-            job.payload.message,
-            session_key=f"cron:{job.id}",
-            channel=job.payload.channel or "cli",
-            chat_id=job.payload.to or "direct",
-        )
+        from nanobot.cron.runtime import execute_cron_job
+
+        response = await execute_cron_job(job, agent=agent_loop, bus=bus)
         result_holder.append(response)
         return response
 

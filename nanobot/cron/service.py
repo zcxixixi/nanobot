@@ -104,6 +104,10 @@ class CronService:
                         payload=CronPayload(
                             kind=j["payload"].get("kind", "agent_turn"),
                             message=j["payload"].get("message", ""),
+                            argv=list(j["payload"].get("argv", []) or []),
+                            cwd=j["payload"].get("cwd"),
+                            env=dict(j["payload"].get("env", {}) or {}),
+                            timeout_s=j["payload"].get("timeoutS"),
                             deliver=j["payload"].get("deliver", False),
                             channel=j["payload"].get("channel"),
                             to=j["payload"].get("to"),
@@ -151,6 +155,10 @@ class CronService:
                     "payload": {
                         "kind": j.payload.kind,
                         "message": j.payload.message,
+                        "argv": j.payload.argv,
+                        "cwd": j.payload.cwd,
+                        "env": j.payload.env,
+                        "timeoutS": j.payload.timeout_s,
                         "deliver": j.payload.deliver,
                         "channel": j.payload.channel,
                         "to": j.payload.to,
@@ -320,6 +328,56 @@ class CronService:
         self._arm_timer()
 
         logger.info("Cron: added job '{}' ({})", name, job.id)
+        return job
+
+    def add_command_job(
+        self,
+        *,
+        name: str,
+        schedule: CronSchedule,
+        argv: list[str],
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_s: int | None = None,
+        deliver: bool = False,
+        channel: str | None = None,
+        to: str | None = None,
+        delete_after_run: bool = False,
+    ) -> CronJob:
+        """Add a new direct-command job."""
+        if not argv:
+            raise ValueError("argv is required for command cron jobs")
+
+        store = self._load_store()
+        _validate_schedule_for_add(schedule)
+        now = _now_ms()
+
+        job = CronJob(
+            id=str(uuid.uuid4())[:8],
+            name=name,
+            enabled=True,
+            schedule=schedule,
+            payload=CronPayload(
+                kind="command",
+                argv=argv,
+                cwd=cwd,
+                env=env or {},
+                timeout_s=timeout_s,
+                deliver=deliver,
+                channel=channel,
+                to=to,
+            ),
+            state=CronJobState(next_run_at_ms=_compute_next_run(schedule, now)),
+            created_at_ms=now,
+            updated_at_ms=now,
+            delete_after_run=delete_after_run,
+        )
+
+        store.jobs.append(job)
+        self._save_store()
+        self._arm_timer()
+
+        logger.info("Cron: added command job '{}' ({})", name, job.id)
         return job
 
     def remove_job(self, job_id: str) -> bool:

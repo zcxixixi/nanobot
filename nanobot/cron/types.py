@@ -21,8 +21,12 @@ class CronSchedule:
 @dataclass
 class CronPayload:
     """What to do when the job runs."""
-    kind: Literal["system_event", "agent_turn"] = "agent_turn"
+    kind: Literal["system_event", "agent_turn", "command"] = "agent_turn"
     message: str = ""
+    argv: list[str] = field(default_factory=list)
+    cwd: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
+    timeout_s: int | None = None
     # Deliver response to channel
     deliver: bool = False
     channel: str | None = None  # e.g. "whatsapp"
